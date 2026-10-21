@@ -52,6 +52,15 @@ async function load(refresh = false) {
   S.busy = false; S.form = null; render();
 }
 
+// Auto-refresh: re-reads every minute while the page is visible and nothing is being typed.
+(function autoRefresh() {
+  const box = document.querySelector("#f-auto");
+  if (!box) return;
+  try { box.checked = localStorage.getItem("rr.auto") === "1"; } catch { /* storage blocked */ }
+  box.addEventListener("change", () => { try { localStorage.setItem("rr.auto", box.checked ? "1" : "0"); } catch { /* ignore */ } });
+  setInterval(() => { if (box.checked && !document.hidden && !S.busy && !S.form && S.data) load(true); }, 60000);
+})();
+
 async function act(path, body) {
   S.busy = true; S.formError = ""; renderControls();
   try {

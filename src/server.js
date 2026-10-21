@@ -11,6 +11,7 @@ import { createStore, createJsonStore, auditEntry } from "./state.js";
 import { createAuth, roleAllows } from "./auth.js";
 import { DEMO_SEED } from "./sources/fixture.js";
 import { jiraConfigured, fetchJiraRelease } from "./sources/jira.js";
+import { createJobs } from "./jobs.js";
 import { buildSlackMessage, sendSlack } from "./notify.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -40,6 +41,8 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
   const config = JSON.parse(await fs.readFile(configPath, "utf8"));
   const auth = authOn === false ? null : await createAuth({ dir: stateDir, env });
   const relDb = await createJsonStore(path.join(stateDir, "releases.json"), () => ({ releases: {}, audit: [] }));
+  const jobsDb = await createJsonStore(path.join(stateDir, "jobs.json"), () => ({ releases: {} }));
+  const jobs = createJobs({ relDb, jobsDb, config, env, deps, log: (m) => console.error(m) });
   const stores = {};
   // Waivers, manual checks and the audit log belong to one release, so each repo and release branch gets its own file.
   const storeKey = ({ mode, release }) => (mode === "demo" ? "demo" : `live.${release.repo}@${release.headRef}`.toLowerCase().replace(/\//g, "__").replace(/[^a-z0-9@._-]+/g, "-"));
@@ -255,6 +258,9 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
       return { me: user, authEnabled: Boolean(auth), releases: rels };
     },
 
+    // When each release was last refreshed from Jira, and the last go/no-go call seen. Any signed-in person can read it.
+    "GET /api/sync": async () => jobs.status(),
+
     "POST /api/notify": async (req, url, user) => {
       guard(req);
       const body = await readBody(req);
@@ -370,7 +376,7 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
     }
   });
 
-  return { server, config, auth };
+  return { server, config, auth, jobs };
 }
 
 // Run directly: node src/server.js
@@ -383,7 +389,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.error("Turning sign-in off is only allowed when HOST is 127.0.0.1 (your own computer). Refusing to start without sign-in on a network address.");
     process.exit(1);
   }
-  const { server, auth } = await createApp({ auth: !authOff });
+  const { server, auth, jobs } = await createApp({ auth: !authOff });
+  jobs.start();
   server.listen(port, host, async () => {
     const mode = isDemo() ? "demo data" : "live data";
     console.log(`Release readiness running on http://${host}:${port} (${mode}, ${authOff ? "sign-in OFF" : "sign-in on"})`);

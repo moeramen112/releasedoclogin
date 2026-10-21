@@ -293,3 +293,5 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
 .tbl.tk .s { min-width: 170px; }
 .ro [data-act="waive"], .ro [data-act="unwaive"], .ro [data-act="close-waive"] { display: none; }
+.autochk { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted, #667085); }
+#sync-state { display: block; margin-top: 4px; }

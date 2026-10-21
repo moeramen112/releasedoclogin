@@ -33,3 +33,17 @@ export async function sendSlack(webhookUrl, payload, fetchImpl = fetch) {
   });
   if (!res.ok) throw new Error(`Slack returned ${res.status}.`);
 }
+
+/** Message for when the call changes on its own (for example GO to HOLD after a ticket moved). */
+export function buildChangeMessage({ release, from, result, dashboardUrl }) {
+  const base = buildSlackMessage({ release, result, dashboardUrl });
+  const to = result.verdict.call;
+  const text = `${release.name}: call changed from ${from} to ${to}. ${result.verdict.reason}`;
+  return {
+    text,
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text: `${EMOJI[to] || ""} *${release.name}* changed from *${from}* to *${to}*` } },
+      ...base.blocks.slice(1),
+    ],
+  };
+}

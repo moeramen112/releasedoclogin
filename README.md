@@ -223,3 +223,15 @@ scripts/           build-standalone.mjs makes the single-file planner
 5. **The design choice (20 seconds).** "If a data source is down, that criterion is pending, not passing. A tool that says GO when it cannot see is worse than no tool."
 
 Questions to expect: why these weights (opinions with tests, meant to be tuned), what about monorepos or many services (one release per config today, and the per-team config is the next step), how it would connect to your systems (adapters return one shape, so a new source is one file).
+
+
+## Auto-refresh and Slack alerts
+
+Open a release, find **What is shipping**, and tick:
+
+- **Refresh from Jira every few minutes**: the server pulls the fix version on its own (every `SYNC_MINUTES`, default 5), even when nobody has the page open. Needs the Jira settings and a fix version.
+- **Post to Slack when the go/no-go call changes**: the server checks each release every minute. When the call changes (say GO to HOLD) and stays changed for `ALERT_SETTLE_MINUTES` (default 2), it posts one message naming both calls and what is holding. Needs `SLACK_WEBHOOK_URL`. The first look at a release never alerts, and a call that flips back before the wait ends sends nothing.
+
+The planner shows when the last refresh happened and any error. The dashboard has an **Auto-refresh every minute** box that only re-reads while the page is open.
+
+The jobs run only while the server is running. On your laptop that means while it is on. For always-on alerts, host it (see above).

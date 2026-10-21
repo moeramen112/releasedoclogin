@@ -3,7 +3,7 @@
 import { evaluate } from "/engine.js";
 import { computeRisk } from "/risk.js";
 import { analyzeDependencies, parseKeys, TEAMS, HANDOFF_STATUS } from "/deps.js";
-import { defaultPlan, blankPlan, nextPlan, applyTemplate, generateRunbook, planToSnapshot, planState, planConfig, briefMarkdown, TYPES, PRIORITIES, TICKET_TYPES, STATUSES, AREAS, ENVIRONMENTS, STRATEGIES, CHECK_STATES, PHASES, ROLE_KEYS, TEMPLATES } from "/plan.js";
+import { mergeTickets, defaultPlan, blankPlan, nextPlan, applyTemplate, generateRunbook, planToSnapshot, planState, planConfig, briefMarkdown, TYPES, PRIORITIES, TICKET_TYPES, STATUSES, AREAS, ENVIRONMENTS, STRATEGIES, CHECK_STATES, PHASES, ROLE_KEYS, TEMPLATES } from "/plan.js";
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -157,7 +157,7 @@ function startRemote(d) {
     lib.items[id] = { ...blankPlan(Date.now()), id };
     lib.order.push(id);
   }
-  const wanted = store.get("rr.current");
+  const wanted = new URLSearchParams(location.search).get("release") || store.get("rr.current");
   lib.current = lib.items[wanted] ? wanted : lib.order[0];
   P = lib.items[lib.current];
   if (readOnly()) {
@@ -223,6 +223,8 @@ const SECTIONS = [
     { p: "release.version", l: "Version", mono: true, ph: "4.13.0" },
     { p: "release.type", l: "Release type", t: "select", o: opt(TYPES), after: "tpl" },
     { p: "release.fixVersion", l: "Jira fix version", mono: true, ph: "4.13" },
+    { p: "release.autoSync", l: "Refresh from Jira every few minutes (server does it, even when nobody has this page open)", t: "check", wide: true },
+    { p: "release.slackAlerts", l: "Post to Slack when the go/no-go call changes", t: "check", wide: true },
     { p: "release.summary", l: "What changes", t: "textarea", wide: true },
     { p: "release.customerImpact", l: "Customer impact", t: "textarea", wide: true },
   ] },
@@ -336,7 +338,7 @@ function renderInputs() {
       { p: "scope.bigAt", l: "Large ticket at", t: "number", suffix: "points or more" },
     ].map(fieldHtml).join("")}</div>
      <div class="tablewrap"><table class="tbl tk" style="min-width:1340px"><thead><tr><th>Key</th><th>Summary</th><th title="The team doing the work">Team</th><th title="Tickets that must be Done first. Separate keys with commas.">Blocked by</th><th>Type</th><th>Pri</th><th>Pts</th><th>Status</th><th>Assignee</th><th>Area</th><th title="Includes a database migration">Mig</th><th title="Customers will see this">Cust</th><th title="Lacks automated tests">No tests</th><th></th></tr></thead><tbody id="tickets-body"></tbody></table></div>
-     <div class="row-actions"><button class="btn small" type="button" data-act="add-ticket">Add ticket</button><button class="btn small" type="button" data-act="pull-jira" id="b-jira">Pull from Jira</button><button class="btn small" type="button" data-act="refresh-jira" id="b-jira-refresh" title="Update statuses and points of the tickets below, and add new ones. Keeps tickets you typed by hand.">Refresh from Jira</button><span id="tk-clear"></span><span class="msg" id="tk-sum"></span><span class="msg" id="jira-msg"></span></div>`);
+     <div class="row-actions"><button class="btn small" type="button" data-act="add-ticket">Add ticket</button><button class="btn small" type="button" data-act="pull-jira" id="b-jira">Pull from Jira</button><button class="btn small" type="button" data-act="refresh-jira" id="b-jira-refresh" title="Update statuses and points of the tickets below, and add new ones. Keeps tickets you typed by hand.">Refresh from Jira</button><span id="tk-clear"></span><span class="msg" id="tk-sum"></span><span class="msg" id="jira-msg"></span><span class="msg" id="sync-state"></span></div>`);
 
   html += section("handoffs", "Handoffs between teams", "Work one team must hand to another before it can start. Each handoff blocks the tickets you name until it is Done.",
     `<div class="tablewrap"><table class="tbl" style="min-width:1000px"><thead><tr><th>Handed over</th><th>From</th><th>To</th><th>Owner</th><th>Due</th><th>Status</th><th title="Ticket keys, separated by commas">Blocks</th><th></th></tr></thead><tbody id="handoffs-body"></tbody></table></div>
@@ -674,6 +676,7 @@ function changed() {
   if (readOnly()) setSaveState("View only: changes are not saved.", "bad");
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveLib, 250);
+  clearTimeout(syncTimer); syncTimer = setTimeout(showSync, 1200);
   renderClear();
   cancelAnimationFrame(raf);
   raf = requestAnimationFrame(renderResults);
@@ -727,6 +730,24 @@ function updateJiraButton() {
   }
 }
 
+let syncTimer;
+const ago = (ms) => { const m = Math.round((Date.now() - ms) / 60000); return m < 1 ? "just now" : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`; };
+async function showSync() {
+  const el = $("#sync-state");
+  if (!el || !remote || !P) return;
+  try {
+    const res = await fetch("/api/sync");
+    if (!res.ok) return;
+    const s = (await res.json())[lib.current] || {};
+    const bits = [];
+    if (P.release.autoSync) bits.push(s.lastError ? `Auto-refresh failed: ${s.lastError}` : s.lastSync ? `Auto-refreshed from Jira ${ago(s.lastSync)}.` : "Auto-refresh is on. First run within a minute.");
+    if (P.release.slackAlerts && s.lastCall) bits.push(`Slack alerts watching: ${s.lastCall}.`);
+    if (s.alertError) bits.push(`Slack failed: ${s.alertError}`);
+    el.textContent = bits.join(" ");
+    el.className = "msg" + (s.lastError || s.alertError ? " bad" : "");
+  } catch { /* status is a nicety */ }
+}
+
 async function refreshJira() {
   const version = P.release.fixVersion.trim();
   if (!version) { say("jira-msg", "Enter the Jira fix version first.", "bad"); return; }
@@ -735,19 +756,10 @@ async function refreshJira() {
     const res = await fetch("/api/jira/issues?version=" + encodeURIComponent(version));
     const body = await res.json();
     if (!res.ok) throw new Error(body.error || `Request failed (${res.status}).`);
-    const byKey = new Map(body.issues.map((i) => [i.key, i]));
-    let updated = 0;
-    P.tickets = P.tickets.map((t) => {
-      const r = byKey.get(t.key);
-      if (!r) return t;
-      byKey.delete(t.key);
-      updated++;
-      return { ...t, ...r, team: t.team || r.team || "", blockedBy: r.blockedBy || t.blockedBy || "", tags: { ...(r.tags || {}), ...(t.tags || {}) } };
-    });
-    const added = [...byKey.values()];
-    P.tickets.push(...added);
+    const m = mergeTickets(P.tickets, body.issues);
+    P.tickets = m.tickets;
     renderTickets(); changed();
-    say("jira-msg", `Refreshed ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}: ${updated} updated, ${added.length} new, ${P.tickets.length - updated - added.length} not in Jira kept as they were.`, "ok");
+    say("jira-msg", `Refreshed ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}: ${m.updated} updated, ${m.added} new, ${m.kept} not in Jira kept as they were.`, "ok");
   } catch (e) {
     say("jira-msg", e.message, "bad");
   }
@@ -958,6 +970,7 @@ $("#import-file").addEventListener("change", async (e) => {
   else if (remote) {
     if (readOnly()) { const i = $("#inputs"); if (i) i.inert = true; }
     setInterval(pollServer, 20000);
+    setInterval(showSync, 30000); showSync();
     document.addEventListener("visibilitychange", () => { if (!document.hidden) pollServer(); });
   }
   try {

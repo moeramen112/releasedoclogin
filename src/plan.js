@@ -68,7 +68,7 @@ const t = (key, summary, type, priority, points, status, assignee, area, tags = 
 export function defaultPlan(now = Date.now()) {
   const plan = {
     release: {
-      name: "Release 4.12", version: "4.12.0", type: "Minor release", fixVersion: "4.12",
+      name: "Release 4.12", version: "4.12.0", type: "Minor release", fixVersion: "4.12", autoSync: false, slackAlerts: true,
       summary: "Multi-currency invoices, push token refresh for Android, and a faster orders page. Includes migration 0412 on the orders table.",
       customerImpact: "Billing customers see invoices in their own currency. Android users on OS 14+ keep push notifications after token refresh.",
     },
@@ -141,6 +141,32 @@ export function defaultPlan(now = Date.now()) {
   return plan;
 }
 
+/**
+ * Bring a fresh list of tickets from Jira into the ones already in the plan, matched by key.
+ * Status, points, priority and the rest come from Jira; the team a person chose, tags they ticked and
+ * blockers they typed are kept when Jira has nothing to say. Tickets that are only in the plan stay.
+ */
+export function mergeTickets(current = [], remote = []) {
+  const stable = (v) => JSON.stringify(v, (_, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, x[k]])) : x));
+  const norm = (t) => ({ team: "", blockedBy: "", ...t, tags: { ...(t.tags || {}) } });
+  const up = (k) => String(k).toUpperCase();
+  const incoming = new Map((remote || []).map((r) => [up(r.key), r]));
+  const seen = new Set();
+  let updated = 0, kept = 0;
+  const tickets = (current || []).map((t) => {
+    const r = incoming.get(up(t.key));
+    if (!r) { kept++; return t; }
+    seen.add(up(t.key));
+    const before = norm(t);
+    const merged = { ...before, ...r, team: before.team || r.team || "", blockedBy: r.blockedBy || before.blockedBy || "", tags: { ...(r.tags || {}), ...before.tags } };
+    if (stable(merged) === stable(before)) return t; // nothing changed, so keep the original object
+    updated++;
+    return merged;
+  });
+  const added = (remote || []).filter((r) => !seen.has(up(r.key))).map(norm);
+  return { tickets: [...tickets, ...added], updated, added: added.length, kept };
+}
+
 /** Fill in the fields a release type normally has. Keeps people, dates and tickets. */
 export function applyTemplate(plan, type) {
   const tpl = TEMPLATES[type];
@@ -161,7 +187,7 @@ export function applyTemplate(plan, type) {
 export function blankPlan(now = Date.now(), type = "Minor release") {
   const deployAt = nextWeekday(now, 8, 2, 2);
   const plan = {
-    release: { name: "", version: "", type, fixVersion: "", summary: "", customerImpact: "" },
+    release: { name: "", version: "", type, fixVersion: "", autoSync: false, slackAlerts: true, summary: "", customerImpact: "" },
     people: Object.fromEntries(ROLE_KEYS.map(([k]) => [k, ""])),
     extraPeople: [],
     when: { freezeAt: shift(deployAt, -5 * 1440), meetingAt: shift(deployAt, -12 * 60), deployAt, windowHours: 2 },
