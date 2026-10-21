@@ -536,5 +536,17 @@ export function reportDocument(m) {
   return `<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>${h(m.title)}</title>\n<style>${css}</style>\n</head>\n<body>\n${reportHtml(m)}\n</body>\n</html>\n`;
 }
 
+/** Word opens this as a normal document. It is HTML with Word's page settings, saved as .doc. */
+export function reportWord(m) {
+  return reportDocument(m).replace("<html lang=\"en\">", '<html lang="en" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word">')
+    .replace("</head>", "<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View></w:WordDocument></xml><![endif]-->\n</head>");
+}
+
+/** A one-page update for people who will not read the whole report: the call, why, the dates and the risks. */
+export function statusModel(m) {
+  const keep = ["Summary", "When", "Risk analysis", "Accepted risks"];
+  return { ...m, title: `${m.name} status update`, sections: m.sections.filter((x) => keep.includes(x.title)) };
+}
+
 /** The report as Markdown. Kept under its original name for existing callers. */
 export const briefMarkdown = (plan, result, risk, now = Date.now()) => reportMarkdown(reportModel(plan, result, risk, now));

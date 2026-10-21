@@ -3,7 +3,7 @@
 import { evaluate } from "/engine.js";
 import { computeRisk } from "/risk.js";
 import { analyzeDependencies, parseKeys, TEAMS, HANDOFF_STATUS } from "/deps.js";
-import { mergeTickets, defaultPlan, blankPlan, nextPlan, applyTemplate, generateRunbook, planToSnapshot, planState, planConfig, briefMarkdown, TYPES, PRIORITIES, TICKET_TYPES, STATUSES, AREAS, ENVIRONMENTS, STRATEGIES, CHECK_STATES, PHASES, ROLE_KEYS, TEMPLATES } from "/plan.js";
+import { mergeTickets, defaultPlan, blankPlan, nextPlan, applyTemplate, generateRunbook, planToSnapshot, planState, planConfig, briefMarkdown, reportModel, reportHtml, reportDocument, reportWord, statusModel, TYPES, PRIORITIES, TICKET_TYPES, STATUSES, AREAS, ENVIRONMENTS, STRATEGIES, CHECK_STATES, PHASES, ROLE_KEYS, TEMPLATES } from "/plan.js";
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -546,7 +546,8 @@ function compute() {
   const result = evaluate(snapshot, planConfig(P), planState(P));
   const risk = computeRisk(P, now);
   const deps = analyzeDependencies(P.tickets, P.handoffs, now, Date.parse(P.when.freezeAt) || null);
-  return { now, result, risk, deps, brief: briefMarkdown(P, result, risk, now) };
+  const model = reportModel(P, result, risk, now);
+  return { now, result, risk, deps, model, brief: briefMarkdown(P, result, risk, now) };
 }
 
 const ratioColor = (r) => (r >= 0.66 ? "var(--bad)" : r >= 0.33 ? "var(--warn)" : "var(--good)");
@@ -646,7 +647,7 @@ function renderCriteria({ result }) {
 }
 
 function renderBrief({ brief }) {
-  return `<section class="panel"><div class="panel-head"><h2>Release brief</h2><div class="row-actions"><button class="btn small" type="button" data-act="copy-brief">Copy Markdown</button>${STANDALONE ? "" : `<button class="btn small" type="button" data-act="download-brief">Download .md</button>`}<span class="msg" id="brief-msg"></span></div></div><pre class="brief" id="brief">${esc(brief)}</pre></section>`;
+  return `<section class="panel"><div class="panel-head"><h2>Release brief</h2><div class="row-actions"><button class="btn small" type="button" data-act="copy-doc" title="Paste into Google Docs, Word, Confluence or Notion with formatting kept">Copy for Docs</button><button class="btn small" type="button" data-act="copy-brief">Copy Markdown</button>${STANDALONE ? "" : `<button class="btn small" type="button" data-act="download-word">Word (.doc)</button><button class="btn small" type="button" data-act="download-doc" title="Open it, then Print and Save as PDF">Printable page</button><button class="btn small" type="button" data-act="download-status" title="One page for leadership">Status one-pager</button><button class="btn small" type="button" data-act="download-brief">.md</button>`}<span class="msg" id="brief-msg"></span></div></div><pre class="brief" id="brief">${esc(brief)}</pre></section>`;
 }
 
 let last = null;
@@ -839,6 +840,14 @@ document.addEventListener("click", async (e) => {
     try { await navigator.clipboard.writeText(text); say("brief-msg", "Copied.", "ok"); }
     catch { const r = document.createRange(); r.selectNodeContents($("#brief")); const s = getSelection(); s.removeAllRanges(); s.addRange(r); say("brief-msg", "Press Ctrl+C or Cmd+C to copy.", ""); }
   }
+  else if (act === "copy-doc") {
+    const html = reportHtml(last.model);
+    try { await navigator.clipboard.write([new ClipboardItem({ "text/html": new Blob([html], { type: "text/html" }), "text/plain": new Blob([last.brief], { type: "text/plain" }) })]); say("brief-msg", "Copied. Paste into your doc.", "ok"); }
+    catch { say("brief-msg", "Copy was blocked here. Use Copy Markdown instead.", "bad"); }
+  }
+  else if (act === "download-word") download(`${slug()}-release-doc.doc`, reportWord(last.model), "application/msword");
+  else if (act === "download-doc") download(`${slug()}-release-doc.html`, reportDocument(last.model), "text/html");
+  else if (act === "download-status") download(`${slug()}-status.html`, reportDocument(statusModel(last.model)), "text/html");
   else if (act === "download-brief") download(`${slug()}-brief.md`, last.brief, "text/markdown");
   else if (act === "copy-json") {
     try { await navigator.clipboard.writeText(JSON.stringify(P, null, 2)); say("brief-msg", "Plan JSON copied.", "ok"); } catch { say("brief-msg", "Copy was blocked here.", "bad"); }

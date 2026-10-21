@@ -235,3 +235,14 @@ Open a release, find **What is shipping**, and tick:
 The planner shows when the last refresh happened and any error. The dashboard has an **Auto-refresh every minute** box that only re-reads while the page is open.
 
 The jobs run only while the server is running. On your laptop that means while it is on. For always-on alerts, host it (see above).
+
+
+## Release docs
+
+In the planner, the **Release brief** panel has:
+
+- **Copy for Docs**: paste into Google Docs, Word, Confluence or Notion with headings and tables kept.
+- **Word (.doc)**: opens in Word.
+- **Printable page**: open it, press Print, choose Save as PDF.
+- **Status one-pager**: just the call, dates and risks, for leadership.
+- **.md** and **Copy Markdown**: plain text.
