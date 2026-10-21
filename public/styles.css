@@ -292,3 +292,4 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 .viewonly { opacity: .75; }
 ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
 .tbl.tk .s { min-width: 170px; }
+.ro [data-act="waive"], .ro [data-act="unwaive"], .ro [data-act="close-waive"] { display: none; }

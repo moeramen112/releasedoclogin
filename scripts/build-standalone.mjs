@@ -45,4 +45,8 @@ mkdirSync(path.join(root, "dist"), { recursive: true });
 writeFileSync(path.join(root, "dist/release-planner.html"), fragment);
 // A full document too, for opening the file directly from disk.
 writeFileSync(path.join(root, "dist/release-planner.standalone.html"), `<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n${headParts}\n</head>\n<body>\n${bodyParts}\n</body>\n</html>\n`);
+// A view-only copy of the same page, for sharing a link. It shows the example release and cannot be edited or saved.
+const roScripts = scripts.replace("window.__STANDALONE = true;", "window.__STANDALONE = true;\nwindow.__READONLY = true;");
+const roHead = headParts.replace("<title>Release Planner</title>", "<title>Release Planner Preview</title>");
+writeFileSync(path.join(root, "dist/release-planner.readonly.html"), `${roHead}\n${bodyInner}\n<script>\n${roScripts}\n</script>\n`);
 console.log(`Wrote dist/release-planner.html (${(fragment.length / 1024).toFixed(0)} KB)`);

@@ -10,6 +10,8 @@ const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const OLD_KEY = "rr.plan.v1"; // the single plan the first version of the planner saved
 const LIB_KEY = "rr.releases.v1";
 const STANDALONE = typeof window !== "undefined" && window.__STANDALONE === true;
+// The shareable preview: the example release, nothing can be changed, nothing is saved.
+const READONLY = typeof window !== "undefined" && window.__READONLY === true;
 const RUN_STATUS = ["todo", "doing", "done", "blocked"];
 const LABEL = { pass: "Pass", warn: "At risk", fail: "Failing", pending: "Pending", waived: "Waived" };
 const chip = (s) => `<span class="chip s-${s}"><i></i>${LABEL[s]}</span>`;
@@ -43,6 +45,7 @@ const FILL = () => ({ ...defaultPlan(), handoffs: [] });
 const validPlan = (p) => Boolean(p && Array.isArray(p.tickets) && p.release);
 
 function loadLib() {
+  if (READONLY) { const id = newId(); return { current: id, order: [id], items: { [id]: { ...defaultPlan(), id } } }; }
   try {
     const raw = store.get(LIB_KEY);
     if (raw) {
@@ -80,6 +83,7 @@ const toLogin = () => location.replace("/login.html?next=" + encodeURIComponent(
 
 function saveLib() {
   lib.items[lib.current] = P;
+  if (READONLY) return;
   if (remote) { pushRemote(lib.current); return; }
   store.set(LIB_KEY, JSON.stringify(lib));
 }
@@ -653,7 +657,8 @@ function renderResults() {
   }
   renderSumbar(last);
   const fresh = !P.release.name.trim() && P.tickets.length === 0 && !Number(P.signals.ci.total);
-  const note = fresh ? `<div class="banner"><strong>New release.</strong><span>Name it and set the dates on the left, then add tickets or pull them from Jira. The call stays HOLD until the checks have data, and anything unknown counts as risk.</span></div>` : "";
+  const roNote = READONLY ? `<div class="banner"><strong>View only.</strong><span>This is an example release with invented names and numbers. You can look at everything, but nothing can be changed or saved.</span></div>` : "";
+  const note = roNote + (fresh ? `<div class="banner"><strong>New release.</strong><span>Name it and set the dates on the left, then add tickets or pull them from Jira. The call stays HOLD until the checks have data, and anything unknown counts as risk.</span></div>` : "");
   renderRelSelect();
   $("#results").innerHTML = note + renderVerdict(last) + renderRisk(last) + renderPoints(last) + renderDeps(last) + renderCriteria(last) + renderBrief(last);
   const p = last.risk.points;
@@ -943,6 +948,11 @@ $("#import-file").addEventListener("change", async (e) => {
   renderInputs();
   renderResults();
   saveLib();
+  if (READONLY) {
+    document.body.classList.add("ro");
+    for (const el of [$("#inputs"), $(".relbar .toolbar")]) if (el) el.inert = true;
+    setSaveState("View only");
+  }
   if (STANDALONE) return; // no server behind a single-file copy
   if (offline) sayRel("Could not reach the server, so changes are saved only in this browser.", false, "bad");
   else if (remote) {
