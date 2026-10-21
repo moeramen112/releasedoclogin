@@ -2,6 +2,7 @@
 // readiness engine (planToSnapshot + planConfig). Pure functions. Runs in Node and in the browser.
 
 import { num, parseLocal, summarizePoints, DONE } from "./risk.js";
+import { analyzeDependencies } from "./deps.js";
 
 export const TYPES = ["Major release", "Minor release", "Patch", "Hotfix"];
 export const PRIORITIES = ["P0", "P1", "P2", "P3"];
@@ -59,7 +60,7 @@ const nextWeekday = (now, minDays, dow, hour) => {
 };
 
 const t = (key, summary, type, priority, points, status, assignee, area, tags = {}) => ({
-  key, summary, type, priority, points, status, assignee, area,
+  key, summary, type, priority, points, status, assignee, area, team: "", blockedBy: "",
   tags: { migration: false, customerFacing: false, untested: false, ...tags },
 });
 
@@ -112,6 +113,7 @@ export function defaultPlan(now = Date.now()) {
       securityCritical: 0, securityHigh: 1,
     },
     checks: { migration: "fail", rollback: "pass", notes: "unset", errorbudget: "pass" },
+    handoffs: [], // { what, from, to, owner, due, status, blocks } work handed from one team to another
     signoffs: [
       { role: "QA", who: "Jo M.", approved: true },
       { role: "Product", who: "Rin A.", approved: true },
@@ -123,6 +125,18 @@ export function defaultPlan(now = Date.now()) {
     settings: defaultSettings(),
     customChecks: [],
   };
+  // Example dependencies, so the page shows how they read.
+  const set = (key, patch) => Object.assign(plan.tickets.find((x) => x.key === key), patch);
+  set("REL-2841", { team: "Backend" });
+  set("REL-2790", { team: "Backend" });
+  set("REL-2750", { team: "Frontend", blockedBy: "REL-2841" });
+  set("REL-2744", { team: "Frontend", blockedBy: "REL-2790" });
+  set("REL-2877", { team: "Mobile" });
+  set("REL-2903", { team: "Frontend" });
+  plan.handoffs = [
+    { what: "Final invoice designs", from: "Design", to: "Frontend", owner: "Rin Aoki", due: dayAt(now, -6, 17), status: "Done", blocks: "REL-2750" },
+    { what: "Android 14 test devices for QA", from: "DevOps", to: "QA", owner: "Hiro Nakamura", due: dayAt(now, -1, 12), status: "In progress", blocks: "REL-2877" },
+  ];
   plan.runbook = generateRunbook(plan);
   return plan;
 }
@@ -162,6 +176,7 @@ export function blankPlan(now = Date.now(), type = "Minor release") {
       coverageDeltaPp: 0, coverageFloorPp: -1, p95DeltaPct: 0, p95BudgetPct: 5, securityCritical: 0, securityHigh: 0,
     },
     checks: { migration: "unset", rollback: "unset", notes: "unset", errorbudget: "unset" },
+    handoffs: [],
     signoffs: [], runbook: [], waivers: {},
     settings: defaultSettings(),
     customChecks: [], // { id, name, required, state } checks a person defines and confirms
@@ -289,6 +304,7 @@ export function planToSnapshot(plan, now = Date.now()) {
       security: { critical: num(s.securityCritical), high: num(s.securityHigh) },
       p95DeltaPct: num(s.p95DeltaPct), coverageDeltaPp: num(s.coverageDeltaPp),
       runbook: runbookStatus(plan, now),
+      deps: analyzeDependencies(plan.tickets, plan.handoffs, now, freezeMs),
     },
   };
 }
@@ -318,6 +334,7 @@ export function planConfig(plan) {
       { id: "p1", name: "No open P1 defects", type: "blockers_none", params: { severity: "P1", failAs: "warn" } },
       { id: "points", name: "Story points complete", type: "points_complete", params: { minDonePct: 100, failBelowPct: 70 } },
       { id: "big", name: "No large ticket left open", type: "large_open", required: false },
+      { id: "deps", name: "Dependencies clear", type: "dependencies_clear", required: false, params: { waitingAs: "warn" } },
       { id: "ci", name: "Release branch checks green", type: "ci_green" },
       { id: "migration", name: "Migration dry run on production-size data", type: "manual", source: "manual", params: { checkId: "migration" } },
       { id: "prs", name: "All scoped PRs merged", type: "open_prs", params: { failAs: "warn" } },
@@ -408,6 +425,19 @@ export function reportModel(plan, result, risk, now = Date.now()) {
     p(pts.total ? `${pts.done} of ${pts.total} points done (${pts.pctDone}%). ${pts.inFlight} in flight, ${pts.todo} not started. ${fc.detail}` : "No story points have been entered."),
     table(["Status", "Points"], STATUSES.map((st) => [st, String(pts.byStatus[st])])),
     ...(Object.keys(pts.byArea).length ? [table(["Area", "Done", "Total"], Object.entries(pts.byArea).sort((a, b) => b[1].total - a[1].total).map(([a, v]) => [a, String(v.done), String(v.total)]))] : []));
+
+  const dep = analyzeDependencies(P.tickets, P.handoffs, now, parseLocal(P.when.freezeAt));
+  if (dep.any) {
+    const on = (w) => w.on.map((x) => x.kind === "handoff" ? `${x.what} (${x.team || "handoff"}, ${x.status})` : `${x.key} (${x.status})`).join(", ");
+    sec("Dependencies",
+      p(dep.cycles.length ? `Circular dependency: ${dep.cycles.map((c) => c.join(" → ") + " → " + c[0]).join("; ")}. None of those tickets can start.`
+        : dep.waiting.length ? `${dep.waiting.length} open ${dep.waiting.length === 1 ? "ticket is" : "tickets are"} waiting on other work.` : "Every dependency is done."),
+      ...(dep.finishFirst.length ? [{ t: "h3", text: "Finish these first" }, ul(dep.finishFirst.map((x) => `${x.key}${x.team ? ` (${x.team})` : ""} ${x.summary}: holds up ${x.unblocks} ${x.unblocks === 1 ? "ticket" : "tickets"}`))] : []),
+      ...(dep.waiting.length ? [{ t: "h3", text: "Waiting" }, table(["Ticket", "Team", "Status", "Waiting on"], dep.waiting.map((w) => [`${w.key} ${w.summary}`, w.team || "", w.status, on(w)]))] : []),
+      ...(dep.startedEarly.length ? [{ t: "h3", text: "Started before the input was done" }, ul(dep.startedEarly.map((w) => `${w.key} (${w.status}) is waiting on ${on(w)}`))] : []),
+      ...(dep.ready.length ? [{ t: "h3", text: "Ready to start now" }, ul(dep.ready.map((x) => `${x.key} ${x.summary}`))] : []),
+      ...((P.handoffs || []).length ? [{ t: "h3", text: "Handoffs between teams" }, table(["Handoff", "From", "To", "Owner", "Due", "Status", "Blocks"], P.handoffs.map((h2) => [h2.what, h2.from, h2.to, h2.owner || "", h2.due ? fmtWhen(h2.due) : "", h2.status, h2.blocks || ""]))] : []));
+  }
 
   sec("Risk analysis",
     table(["Factor", "Points", "Detail"], [...risk.factors].sort((a, b) => b.points - a.points).map((f) => [f.label, `${f.points}/${f.max}`, f.detail])),

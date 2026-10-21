@@ -20,9 +20,29 @@ Before a release, someone collects status by hand from the issue tracker, CI, th
 - a risk score out of 100 with a breakdown by factor, plain-language recommendations, and a suggested staged rollout
 - a story-point forecast: points done, points remaining, and whether the team's velocity can finish before the freeze
 - a runbook, prefilled from the dates, owners and rollout strategy
-- a release brief in Markdown (who, what, when, where, how, risk, criteria, runbook) to paste into Slack or Confluence
+- a dependency view: what is waiting on what, what to finish first, and which handoffs between teams are late
+- a release brief in Markdown (who, what, when, where, how, dependencies, risk, criteria, runbook) to paste into Slack or Confluence
 
 ![Planner](docs/planner.png)
+
+## Dependencies: what waits on what
+
+Some work cannot start until other work is done: the frontend waits for the backend, QA waits for the merge, tickets cannot be written until the designs are handed over. Two things in the planner capture this.
+
+- **Team and Blocked by** on each ticket. Name the team doing the work, and list the tickets that must be Done first, separated by commas (for example `REL-2841, REL-2790`).
+- **Handoffs between teams**, a table below the tickets. Each row is something one team hands to another (a name, who from, who to, an owner, a due date, a status) and the tickets it blocks. Ticket keys in these lists are not case sensitive.
+
+From that the planner shows, in a Dependencies panel and in the release brief:
+
+- tickets that are **waiting**, and on what
+- the **longest chain** that has to happen in order
+- the tickets to **finish first**, ranked by how many others they hold up
+- work **started before its input was done** (in progress or in review while the blocker is open)
+- tickets that are **ready to start now**
+- **handoffs to chase**: overdue, blocked, or due after the code freeze
+- **circular dependencies**, where tickets wait on each other so none can start
+
+It adds a **Dependencies clear** check to go/no-go (advisory by default; a release can make it required) and a Dependencies factor to the risk score. A blocker that is not in this release's ticket list counts as unresolved, and the Blocked by box is highlighted. **Pull from Jira** fills Blocked by from Jira "is blocked by" links, and **Refresh from Jira** keeps what you typed. I tested the Jira links against a mock, not a live Jira.
 
 ## Using it for every release
 
@@ -142,14 +162,15 @@ Form ───┘   (one shape)  (pure)                         planner, brief, 
 
 ## The risk model
 
-Twelve factors, weighted to add up to 100. The weights are in `src/risk.js` and each has a test.
+Thirteen factors, weighted to add up to 100. The weights are in `src/risk.js` and each has a test.
 
 | Factor | Max | What drives it |
 |---|---|---|
-| Open defects | 18 | P0 bugs 10 each, P1 4, P2 1 |
-| Unfinished scope | 16 | Share of story points not done, plus a penalty if velocity cannot finish before the freeze or work is open after it |
-| Data migration | 10 | In scope and not dry-run on production-size data |
-| Rollback readiness | 8 | Not rehearsed, no written plan, or a target over 30 minutes |
+| Open defects | 16 | P0 bugs 10 each, P1 4, P2 1 |
+| Unfinished scope | 14 | Share of story points not done, plus a penalty if velocity cannot finish before the freeze or work is open after it |
+| Data migration | 9 | In scope and not dry-run on production-size data |
+| Rollback readiness | 7 | Not rehearsed, no written plan, or a target over 30 minutes |
+| Dependencies between work | 6 | Tickets waiting on other work, work started before its input was done, overdue or blocked handoffs, long chains, circular dependencies |
 | Test and security health | 8 | Real failing checks, quarantined failures, coverage, p95 latency, vulnerabilities |
 | Size of the change | 7 | Files and lines against a budget |
 | Late and unreviewed changes | 7 | Merged after the freeze, merged without an approval |
@@ -166,12 +187,13 @@ Levels: under 25 Low, under 50 Moderate, under 75 High, otherwise Critical. Each
 ```
 src/engine.js      criteria evaluators, waivers, verdict (pure)
 src/risk.js        story points, forecast, risk score (pure)
+src/deps.js        what waits on what: blockers, handoffs, cycles, chains (pure)
 src/plan.js        the plan, templates, runbook generator, brief (pure)
 src/sources/       GitHub, Jira, and demo-data adapters
 src/server.js      HTTP server and JSON API
 src/auth.js        accounts, sessions, invites, roles (no dependencies)
 public/            dashboard, planner, sign-in, people (plain JS, no build step)
-test/              80 tests, including a mock GitHub and a mock Jira
+test/              99 tests, including a mock GitHub and a mock Jira
 scripts/           build-standalone.mjs makes the single-file planner
 ```
 

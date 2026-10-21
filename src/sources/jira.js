@@ -25,6 +25,12 @@ const JIRA_TYPES = { Bug: "Bug", Task: "Task", "Sub-task": "Task", Story: "Story
  * Every issue in the release's fix version, with story points, for the planner.
  * Story points live in a custom field whose id differs per Jira site: set jira.storyPointsField.
  */
+/** Keys of the issues this one "is blocked by". Jira lists the other side of the link as inwardIssue. */
+export const blockersFrom = (f) => (f.issuelinks || [])
+  .filter((l) => l.inwardIssue?.key && /blocked by/i.test(l.type?.inward || ""))
+  .map((l) => l.inwardIssue.key)
+  .join(", ");
+
 export async function fetchJiraRelease({ version, config, env = process.env, fetchImpl = fetch, now = Date.now() }) {
   const base = env.JIRA_BASE_URL.replace(/\/$/, "");
   const auth = Buffer.from(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}`).toString("base64");
@@ -40,7 +46,7 @@ export async function fetchJiraRelease({ version, config, env = process.env, fet
     const res = await fetchImpl(`${base}/rest/api/3/search/jql`, {
       method: "POST",
       headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ jql, fields: ["summary", "priority", "assignee", "status", "issuetype", "components", "labels", pointsField], maxResults: 100, ...(nextPageToken ? { nextPageToken } : {}) }),
+      body: JSON.stringify({ jql, fields: ["summary", "priority", "assignee", "status", "issuetype", "components", "labels", "issuelinks", pointsField], maxResults: 100, ...(nextPageToken ? { nextPageToken } : {}) }),
       signal: AbortSignal.timeout(20000),
     });
     if (res.status === 401 || res.status === 403) throw new Error(`Jira rejected the credentials (${res.status}).`);
@@ -63,6 +69,8 @@ export async function fetchJiraRelease({ version, config, env = process.env, fet
       status: mapStatus(f.status),
       assignee: f.assignee?.displayName || "Unassigned",
       area: areaFor(f),
+      team: "",
+      blockedBy: blockersFrom(f),
       tags: { migration: labels.includes("migration"), customerFacing: labels.includes("customer-facing"), untested: labels.includes("needs-tests") },
     };
   });

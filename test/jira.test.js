@@ -44,6 +44,20 @@ test("story points come from the configured custom field, across pages", async (
   assert.match(seen[0].opts.headers.Authorization, /^Basic /);
 });
 
+test("\"is blocked by\" links become the ticket's blockers, and \"blocks\" links do not", async () => {
+  const link = (inward, outward, side, key) => ({ type: { name: "Blocks", inward, outward }, [side]: { key } });
+  const pages = [{ issues: [
+    issue("FE-1", { issuelinks: [link("is blocked by", "blocks", "inwardIssue", "BE-1"), link("is blocked by", "blocks", "inwardIssue", "BE-2"), link("is blocked by", "blocks", "outwardIssue", "QA-1")] }),
+    issue("BE-1", { issuelinks: [link("is blocked by", "blocks", "outwardIssue", "FE-1")] }),
+    issue("REL-9", { issuelinks: [{ type: { name: "Relates", inward: "relates to", outward: "relates to" }, inwardIssue: { key: "REL-1" } }] }),
+    issue("REL-10", {}),
+  ], isLast: true }];
+  const seen = [];
+  const out = await fetchJiraRelease({ version: "4.12", config: {}, env, fetchImpl: mockFetch(pages, seen) });
+  assert.deepEqual(out.map((x) => x.blockedBy), ["BE-1, BE-2", "", "", ""]);
+  assert.ok(seen[0].body.fields.includes("issuelinks"));
+});
+
 test("Jira statuses map to the planner's four", () => {
   assert.equal(mapStatus({ name: "Backlog", statusCategory: { key: "new" } }), "To do");
   assert.equal(mapStatus({ name: "In Code Review", statusCategory: { key: "indeterminate" } }), "In review");

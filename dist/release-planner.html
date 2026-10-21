@@ -200,6 +200,7 @@ td .id { font-family: var(--font-data); font-size: 12px; color: var(--muted); di
 .tbl input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
 .tbl .k { width: 92px; } .tbl .s { min-width: 220px; } .tbl .ty { width: 84px; } .tbl .pr { width: 66px; } .tbl .pt { width: 62px; }
 .tbl .st { width: 118px; } .tbl .as { width: 110px; } .tbl .ar { width: 100px; } .tbl .x { width: 30px; }
+.tbl .tm { width: 112px; } .tbl .bb { width: 150px; } .tbl .warn-in { border-color: var(--warn); background: var(--warn-bg); }
 .tbl .ph { width: 108px; } .tbl .ow { width: 140px; } .tbl .wh { width: 190px; }
 .row-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .msg { font-size: 12px; color: var(--muted); }
@@ -293,6 +294,8 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 .who a:hover { color: var(--accent); }
 .save-state { font-size: 12px; }
 .viewonly { opacity: .75; }
+ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.tbl.tk .s { min-width: 170px; }
 
 </style>
 <div class="wrap">
@@ -327,6 +330,154 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
   </div>
   <input type="file" id="import-file" accept="application/json,.json" hidden>
 <script>
+const __mod_deps = (() => {
+// Dependencies between pieces of work: "the frontend ticket cannot start until the backend one is merged",
+// "QA waits for the merge", "tickets cannot be written until the design is handed over".
+// Pure functions, no I/O. Runs in Node and in the browser.
+//
+// Two kinds of dependency are tracked:
+//  - a ticket is blocked by other tickets in this release (ticket.blockedBy, a list of keys)
+//  - a handoff between teams (design to frontend, devops to QA) that blocks named tickets
+
+const TEAMS = ["Design", "Product", "Backend", "Frontend", "Mobile", "QA", "Security", "DevOps", "Docs and support", "Other"];
+const HANDOFF_STATUS = ["Not started", "In progress", "Done", "Blocked"];
+
+const DONE = "Done";
+const STARTED = ["In progress", "In review", DONE];
+const up = (s) => String(s ?? "").trim().toUpperCase();
+
+/** "rel-1, REL-2; REL-3" becomes ["REL-1","REL-2","REL-3"]. */
+const parseKeys = (v) => [...new Set(String(v ?? "").toUpperCase().split(/[\s,;]+/).filter(Boolean))];
+
+const parseTime = (s) => { const t = Date.parse(s); return Number.isNaN(t) ? null : t; };
+
+/**
+ * Work out what is waiting on what. Returns:
+ *  any            true if any dependency was entered
+ *  waiting        open tickets that cannot finish yet, with what they wait on
+ *  startedEarly   tickets that are in progress, in review or done while something they depend on is not done
+ *  ready          tickets that were waiting and can start now
+ *  finishFirst    open tickets that hold up the most other tickets
+ *  longestChain   the longest line of open tickets that must happen one after another
+ *  cycles         tickets that depend on each other in a circle, so none can start
+ *  outside        keys named as blockers that are not tickets in this release (counted as unresolved)
+ *  handoffs       open, overdue, blocked, and due-after-freeze handoffs
+ */
+function analyzeDependencies(tickets = [], handoffs = [], now = Date.now(), freezeMs = null) {
+  const list = (tickets || []).filter((t) => t && up(t.key));
+  const byKey = new Map(list.map((t) => [up(t.key), t]));
+  const isOpen = (t) => t.status !== DONE;
+  const hs = (handoffs || []).filter((h) => h && (String(h.what || "").trim() || parseKeys(h.blocks).length));
+
+  // Edges: ticket key -> things it waits on.
+  const blockersOf = new Map();
+  const outside = new Set();
+  for (const t of list) {
+    const k = up(t.key);
+    const on = [];
+    for (const b of parseKeys(t.blockedBy)) {
+      if (b === k) continue; // a ticket cannot block itself; ignore the typo
+      const bt = byKey.get(b);
+      if (bt) on.push({ kind: "ticket", key: bt.key, status: bt.status, team: bt.team || "", open: isOpen(bt) });
+      else { outside.add(b); on.push({ kind: "outside", key: b, status: "Not in this release", team: "", open: true }); }
+    }
+    blockersOf.set(k, on);
+  }
+  for (const h of hs) {
+    for (const k of parseKeys(h.blocks)) {
+      if (!byKey.has(k)) { outside.add(k); continue; }
+      blockersOf.get(k).push({ kind: "handoff", key: "", what: h.what || "Handoff", status: h.status || "Not started", team: h.from || "", open: h.status !== DONE });
+    }
+  }
+
+  const waiting = [], startedEarly = [], ready = [];
+  for (const t of list) {
+    const k = up(t.key);
+    const open = blockersOf.get(k).filter((x) => x.open);
+    const all = blockersOf.get(k);
+    if (isOpen(t) && open.length) waiting.push({ key: t.key, summary: t.summary, team: t.team || "", status: t.status, points: Number(t.points) || 0, on: open });
+    if (STARTED.includes(t.status) && open.length) startedEarly.push({ key: t.key, summary: t.summary, team: t.team || "", status: t.status, on: open });
+    if (isOpen(t) && t.status === "To do" && all.length && !open.length) ready.push({ key: t.key, summary: t.summary, team: t.team || "" });
+  }
+
+  // Circular dependencies: depth-first search over ticket-to-ticket edges.
+  const cycles = [];
+  const state = new Map(); // 1 = on the current path, 2 = finished
+  const path = [];
+  const visit = (k) => {
+    state.set(k, 1); path.push(k);
+    for (const b of blockersOf.get(k)) {
+      if (b.kind !== "ticket") continue;
+      const bk = up(b.key);
+      if (state.get(bk) === 1) {
+        const loop = path.slice(path.indexOf(bk));
+        const at = loop.indexOf([...loop].sort()[0]); // start at the smallest key so the same loop is reported once
+        const norm = [...loop.slice(at), ...loop.slice(0, at)];
+        if (!cycles.some((c) => c.join() === norm.join())) cycles.push(norm);
+      } else if (!state.has(bk)) visit(bk);
+    }
+    path.pop(); state.set(k, 2);
+  };
+  for (const k of byKey.keys()) if (!state.has(k)) visit(k);
+  const inCycle = new Set(cycles.flat());
+
+  // Longest chain of open tickets, one blocked by the next (loops are skipped).
+  const memo = new Map();
+  const depth = (k, seen = new Set()) => {
+    if (memo.has(k)) return memo.get(k);
+    if (seen.has(k) || inCycle.has(k)) return { len: 0, keys: [] };
+    seen.add(k);
+    let best = { len: 0, keys: [] };
+    for (const b of blockersOf.get(k)) {
+      if (b.kind !== "ticket" || !b.open) continue;
+      const d = depth(up(b.key), seen);
+      if (d.len > best.len) best = d;
+    }
+    seen.delete(k);
+    const t = byKey.get(k);
+    const res = isOpen(t) ? { len: best.len + 1, keys: [...best.keys, t.key] } : { len: 0, keys: [] };
+    memo.set(k, res);
+    return res;
+  };
+  let longest = { len: 0, keys: [] };
+  for (const k of byKey.keys()) { const d = depth(k); if (d.len > longest.len) longest = d; }
+
+  // Which open ticket unblocks the most others, directly or through a chain.
+  const blocks = new Map(); // key -> keys that wait on it
+  for (const [k, on] of blockersOf) for (const b of on) if (b.kind === "ticket") (blocks.get(up(b.key)) || blocks.set(up(b.key), []).get(up(b.key))).push(k);
+  const downstream = (k) => {
+    const seen = new Set(), stack = [...(blocks.get(k) || [])];
+    while (stack.length) { const n = stack.pop(); if (seen.has(n) || n === k) continue; seen.add(n); stack.push(...(blocks.get(n) || [])); }
+    return [...seen].filter((n) => isOpen(byKey.get(n)));
+  };
+  const finishFirst = [...byKey.entries()]
+    .filter(([k, t]) => isOpen(t) && !inCycle.has(k))
+    .map(([k, t]) => ({ key: t.key, summary: t.summary, team: t.team || "", status: t.status, unblocks: downstream(k).length }))
+    .filter((x) => x.unblocks > 0)
+    .sort((a, b) => b.unblocks - a.unblocks)
+    .slice(0, 3);
+
+  const open = hs.filter((h) => h.status !== DONE);
+  const dueOf = (h) => parseTime(h.due);
+  const handoffInfo = {
+    total: hs.length,
+    open: open.map((h) => ({ what: h.what || "Handoff", from: h.from, to: h.to, status: h.status || "Not started", due: h.due })),
+    overdue: open.filter((h) => dueOf(h) !== null && dueOf(h) < now).map((h) => ({ what: h.what || "Handoff", from: h.from, to: h.to, due: h.due })),
+    blocked: open.filter((h) => h.status === "Blocked").map((h) => ({ what: h.what || "Handoff", from: h.from, to: h.to })),
+    afterFreeze: freezeMs === null ? [] : open.filter((h) => dueOf(h) !== null && dueOf(h) > freezeMs).map((h) => ({ what: h.what || "Handoff", from: h.from, to: h.to, due: h.due })),
+  };
+
+  const any = hs.length > 0 || [...blockersOf.values()].some((on) => on.length > 0);
+  return {
+    any, waiting, startedEarly, ready, finishFirst, cycles,
+    longestChain: { length: longest.len, keys: longest.keys },
+    outside: [...outside],
+    handoffs: handoffInfo,
+  };
+}
+
+return { TEAMS, HANDOFF_STATUS, parseKeys, analyzeDependencies };
+})();
 const __mod_engine = (() => {
 // Readiness engine. Pure functions only: no network, no disk, no clock except where passed in.
 // Input: a normalized snapshot (from any mix of sources), the config, and persisted state
@@ -451,6 +602,28 @@ const EVALUATORS = {
     const head = `${m.state === "pass" ? "Confirmed" : "Marked failing"}${m.by ? ` by ${m.by}` : ""}`;
     const detail = m.note ? `${sentence(head)} ${sentence(m.note)}` : sentence(head);
     return { status: m.state === "pass" ? "pass" : "fail", detail };
+  },
+
+  // Tickets and handoffs that wait on other work: backend before frontend, merge before QA, designs before tickets.
+  dependencies_clear(params, snapshot) {
+    const r = need(snapshot, "deps");
+    if (r.error) return unavailable("dependencies", r.error);
+    const d = r.value;
+    if (!d.any) return { status: "pass", detail: "No dependencies entered." };
+    const names = (arr, n = 3) => arr.slice(0, n).map((x) => x.key || x.what).join(", ") + (arr.length > n ? "…" : "");
+    const problems = [];
+    let status = "pass";
+    const raise = (s) => { if (SEVERITY[s] > SEVERITY[status]) status = s; };
+    if (d.cycles.length) { problems.push(`circular: ${d.cycles[0].join(" → ")} → ${d.cycles[0][0]}, so none of them can start`); raise("fail"); }
+    const begun = d.startedEarly.filter((x) => x.status !== "Done").length; // waiting, yet already being worked on
+    const doneEarly = d.startedEarly.filter((x) => x.status === "Done");
+    if (d.waiting.length) { problems.push(`${plural(d.waiting.length, "ticket is", "tickets are")} waiting on other work (${names(d.waiting)})${begun ? `, ${begun === d.waiting.length ? "all" : begun} already started` : ""}`); raise(params.waitingAs || "warn"); }
+    if (doneEarly.length) { problems.push(`${plural(doneEarly.length, "ticket is", "tickets are")} marked Done while what they depend on is not (${names(doneEarly)})`); raise("warn"); }
+    if (d.handoffs.overdue.length) { problems.push(`${plural(d.handoffs.overdue.length, "handoff is", "handoffs are")} overdue (${names(d.handoffs.overdue)})`); raise("warn"); }
+    if (d.handoffs.blocked.length) { problems.push(`${plural(d.handoffs.blocked.length, "handoff is", "handoffs are")} blocked (${names(d.handoffs.blocked)})`); raise("warn"); }
+    if (d.outside.length) { problems.push(`waiting on ${d.outside.slice(0, 3).join(", ")}, which ${d.outside.length === 1 ? "is" : "are"} not in this release's ticket list`); raise("warn"); }
+    if (!problems.length) return { status: "pass", detail: "Every dependency is done." };
+    return { status, detail: problems.join("; ").replace(/^./, (c) => c.toUpperCase()) + "." };
   },
 
   // Story points done against the target share, from Jira or the planning form.
@@ -582,6 +755,7 @@ const __mod_risk = (() => {
 // Release risk model. Pure functions, no I/O. Runs in Node and in the browser.
 // Factor weights add up to 100, so the score reads as "points of risk out of 100".
 
+const { analyzeDependencies } = __mod_deps;
 const DONE = "Done";
 const STATUS_ORDER = ["To do", "In progress", "In review", "Done"];
 const SENSITIVE_AREAS = ["Payments", "Auth", "Data"];
@@ -689,17 +863,17 @@ function computeRisk(plan, now = Date.now()) {
   const add = (id, label, max, points, detail, advice) =>
     factors.push({ id, label, max, points: Math.max(0, Math.min(max, Math.round(points))), detail, advice });
 
-  // 1. Unfinished scope (16)
+  // 1. Unfinished scope (14)
   const remPct = pts.total ? pts.remaining / pts.total : 0.5;
   const shortfall = fc.state === "behind" ? 6 : fc.state === "tight" ? 3 : fc.state === "after-freeze" ? 6 : 0;
-  add("scope", "Unfinished scope", 16, remPct * 10 + shortfall,
+  add("scope", "Unfinished scope", 14, remPct * 10 + shortfall,
     pts.total ? `${pts.remaining} of ${pts.total} points not done (${100 - pts.pctDone}%). ${fc.detail}` : "No story points entered, so scope cannot be measured.",
     "Cut or defer unfinished tickets before the go/no-go meeting. Anything still open after the freeze needs a named owner and a feature flag.");
 
-  // 2. Open defects (18)
+  // 2. Open defects (16)
   const openBugs = tickets.filter((t) => t.status !== DONE && t.type === "Bug");
   const bugs = (p) => openBugs.filter((t) => t.priority === p).length;
-  add("blockers", "Open defects", 18, bugs("P0") * 10 + bugs("P1") * 4 + bugs("P2"),
+  add("blockers", "Open defects", 16, bugs("P0") * 10 + bugs("P1") * 4 + bugs("P2"),
     `${bugs("P0")} P0, ${bugs("P1")} P1 and ${bugs("P2")} P2 bugs are open.`,
     "Resolve every P0 before release. For each open P1, agree a fix date or record a waiver with a named approver.");
 
@@ -737,7 +911,7 @@ function computeRisk(plan, now = Date.now()) {
     `${plural(late, "PR", "PRs")} merged after the freeze, ${plural(unapproved, "merged PR", "merged PRs")} without an approval.`,
     "Review every post-freeze change by hand. Revert anything that does not have a clear reason to be in this release.");
 
-  // 8. Data migration (10)
+  // 8. Data migration (9)
   const hasMigration = tickets.some((t) => t.tags?.migration) || (checks.migration && checks.migration !== "na");
   let migPts = 0, migDetail = "No migration in this release.";
   if (hasMigration) {
@@ -745,14 +919,14 @@ function computeRisk(plan, now = Date.now()) {
     migPts = m === "pass" ? 1 : m === "fail" ? 10 : 7;
     migDetail = m === "pass" ? "Migration dry run passed." : m === "fail" ? "Migration dry run failed." : "Migration is in scope and has not been dry-run on production-size data.";
   }
-  add("migration", "Data migration", 10, migPts, migDetail,
+  add("migration", "Data migration", 9, migPts, migDetail,
     "Dry-run the migration on production-size data and measure lock time. Decide in advance whether it can be rolled back.");
 
-  // 9. Rollback readiness (8)
+  // 9. Rollback readiness (7)
   const rb = checks.rollback;
   const planText = String(how.rollbackPlan || "").trim();
   const rbMin = num(how.rollbackMinutes);
-  add("rollback", "Rollback readiness", 8,
+  add("rollback", "Rollback readiness", 7,
     (rb === "pass" ? 0 : rb === "fail" ? 8 : 6) + (planText.length < 20 ? 2 : 0) + (rbMin > 30 ? 2 : 0),
     `Rehearsal ${rb === "pass" ? "passed" : rb === "fail" ? "failed" : "not done"}; ${planText.length < 20 ? "no written rollback plan" : "rollback plan written"}; target ${rbMin || "?"} minutes.`,
     "Rehearse the rollback on staging, write the steps down, and keep the target under 30 minutes.");
@@ -788,6 +962,22 @@ function computeRisk(plan, now = Date.now()) {
     `${{ bigbang: "All at once", phased: "Region by region", bluegreen: "Blue/green switch", canary: "Canary with staged percentages" }[strat] || "No strategy chosen"}; new features ${how.flagsDefaultOff ? "ship behind flags that default off" : "are not behind flags"}.`,
     "Use a staged rollout and put new behavior behind flags that default off, so rollback is a toggle instead of a deploy.");
 
+  // 13. Dependencies (6): work that waits on other work, and handoffs between teams
+  const dep = analyzeDependencies(tickets, plan.handoffs, now, parseLocal(plan.when?.freezeAt));
+  const chainLen = dep.longestChain.length;
+  const first = dep.finishFirst[0];
+  add("dependencies", "Dependencies between work", 6,
+    (dep.cycles.length ? 6 : 0) + Math.min(3, dep.waiting.length * 0.75) + Math.min(2, dep.startedEarly.length * 0.75) + Math.min(2, dep.handoffs.overdue.length + dep.handoffs.blocked.length) + (chainLen >= 3 ? 1 : 0) + Math.min(1, dep.outside.length * 0.5),
+    !dep.any ? "No dependencies entered."
+      : [
+        dep.cycles.length ? `${plural(dep.cycles.length, "circular dependency", "circular dependencies")}` : "",
+        dep.waiting.length ? `${plural(dep.waiting.length, "ticket", "tickets")} waiting on other work${dep.startedEarly.some((x) => x.status !== DONE) ? `, ${dep.startedEarly.filter((x) => x.status !== DONE).length} already started` : ""}` : "",
+        dep.startedEarly.some((x) => x.status === DONE) ? `${plural(dep.startedEarly.filter((x) => x.status === DONE).length, "ticket", "tickets")} marked Done before what they depend on` : "",
+        dep.handoffs.overdue.length ? `${plural(dep.handoffs.overdue.length, "handoff", "handoffs")} overdue` : "",
+        chainLen >= 2 ? `longest chain: ${dep.longestChain.keys.join(" → ")}` : "",
+      ].filter(Boolean).join("; ") + ".",
+    `${first ? `Finish ${first.key} first: it holds up ${plural(first.unblocks, "other ticket", "other tickets")}. ` : ""}Confirm each handoff with its owner, and do not let dependent work start from guesses. Work that waits on something unfinished is the usual cause of late scope.`);
+
   const score = Math.max(0, Math.min(100, factors.reduce((n, f) => n + f.points, 0)));
   const level = levelFor(score);
   const recommendations = factors
@@ -806,6 +996,7 @@ const __mod_plan = (() => {
 // readiness engine (planToSnapshot + planConfig). Pure functions. Runs in Node and in the browser.
 
 const { num, parseLocal, summarizePoints, DONE } = __mod_risk;
+const { analyzeDependencies } = __mod_deps;
 const TYPES = ["Major release", "Minor release", "Patch", "Hotfix"];
 const PRIORITIES = ["P0", "P1", "P2", "P3"];
 const TICKET_TYPES = ["Story", "Bug", "Task"];
@@ -862,7 +1053,7 @@ const nextWeekday = (now, minDays, dow, hour) => {
 };
 
 const t = (key, summary, type, priority, points, status, assignee, area, tags = {}) => ({
-  key, summary, type, priority, points, status, assignee, area,
+  key, summary, type, priority, points, status, assignee, area, team: "", blockedBy: "",
   tags: { migration: false, customerFacing: false, untested: false, ...tags },
 });
 
@@ -915,6 +1106,7 @@ function defaultPlan(now = Date.now()) {
       securityCritical: 0, securityHigh: 1,
     },
     checks: { migration: "fail", rollback: "pass", notes: "unset", errorbudget: "pass" },
+    handoffs: [], // { what, from, to, owner, due, status, blocks } work handed from one team to another
     signoffs: [
       { role: "QA", who: "Jo M.", approved: true },
       { role: "Product", who: "Rin A.", approved: true },
@@ -926,6 +1118,18 @@ function defaultPlan(now = Date.now()) {
     settings: defaultSettings(),
     customChecks: [],
   };
+  // Example dependencies, so the page shows how they read.
+  const set = (key, patch) => Object.assign(plan.tickets.find((x) => x.key === key), patch);
+  set("REL-2841", { team: "Backend" });
+  set("REL-2790", { team: "Backend" });
+  set("REL-2750", { team: "Frontend", blockedBy: "REL-2841" });
+  set("REL-2744", { team: "Frontend", blockedBy: "REL-2790" });
+  set("REL-2877", { team: "Mobile" });
+  set("REL-2903", { team: "Frontend" });
+  plan.handoffs = [
+    { what: "Final invoice designs", from: "Design", to: "Frontend", owner: "Rin Aoki", due: dayAt(now, -6, 17), status: "Done", blocks: "REL-2750" },
+    { what: "Android 14 test devices for QA", from: "DevOps", to: "QA", owner: "Hiro Nakamura", due: dayAt(now, -1, 12), status: "In progress", blocks: "REL-2877" },
+  ];
   plan.runbook = generateRunbook(plan);
   return plan;
 }
@@ -965,6 +1169,7 @@ function blankPlan(now = Date.now(), type = "Minor release") {
       coverageDeltaPp: 0, coverageFloorPp: -1, p95DeltaPct: 0, p95BudgetPct: 5, securityCritical: 0, securityHigh: 0,
     },
     checks: { migration: "unset", rollback: "unset", notes: "unset", errorbudget: "unset" },
+    handoffs: [],
     signoffs: [], runbook: [], waivers: {},
     settings: defaultSettings(),
     customChecks: [], // { id, name, required, state } checks a person defines and confirms
@@ -1092,6 +1297,7 @@ function planToSnapshot(plan, now = Date.now()) {
       security: { critical: num(s.securityCritical), high: num(s.securityHigh) },
       p95DeltaPct: num(s.p95DeltaPct), coverageDeltaPp: num(s.coverageDeltaPp),
       runbook: runbookStatus(plan, now),
+      deps: analyzeDependencies(plan.tickets, plan.handoffs, now, freezeMs),
     },
   };
 }
@@ -1121,6 +1327,7 @@ function planConfig(plan) {
       { id: "p1", name: "No open P1 defects", type: "blockers_none", params: { severity: "P1", failAs: "warn" } },
       { id: "points", name: "Story points complete", type: "points_complete", params: { minDonePct: 100, failBelowPct: 70 } },
       { id: "big", name: "No large ticket left open", type: "large_open", required: false },
+      { id: "deps", name: "Dependencies clear", type: "dependencies_clear", required: false, params: { waitingAs: "warn" } },
       { id: "ci", name: "Release branch checks green", type: "ci_green" },
       { id: "migration", name: "Migration dry run on production-size data", type: "manual", source: "manual", params: { checkId: "migration" } },
       { id: "prs", name: "All scoped PRs merged", type: "open_prs", params: { failAs: "warn" } },
@@ -1212,6 +1419,19 @@ function reportModel(plan, result, risk, now = Date.now()) {
     table(["Status", "Points"], STATUSES.map((st) => [st, String(pts.byStatus[st])])),
     ...(Object.keys(pts.byArea).length ? [table(["Area", "Done", "Total"], Object.entries(pts.byArea).sort((a, b) => b[1].total - a[1].total).map(([a, v]) => [a, String(v.done), String(v.total)]))] : []));
 
+  const dep = analyzeDependencies(P.tickets, P.handoffs, now, parseLocal(P.when.freezeAt));
+  if (dep.any) {
+    const on = (w) => w.on.map((x) => x.kind === "handoff" ? `${x.what} (${x.team || "handoff"}, ${x.status})` : `${x.key} (${x.status})`).join(", ");
+    sec("Dependencies",
+      p(dep.cycles.length ? `Circular dependency: ${dep.cycles.map((c) => c.join(" → ") + " → " + c[0]).join("; ")}. None of those tickets can start.`
+        : dep.waiting.length ? `${dep.waiting.length} open ${dep.waiting.length === 1 ? "ticket is" : "tickets are"} waiting on other work.` : "Every dependency is done."),
+      ...(dep.finishFirst.length ? [{ t: "h3", text: "Finish these first" }, ul(dep.finishFirst.map((x) => `${x.key}${x.team ? ` (${x.team})` : ""} ${x.summary}: holds up ${x.unblocks} ${x.unblocks === 1 ? "ticket" : "tickets"}`))] : []),
+      ...(dep.waiting.length ? [{ t: "h3", text: "Waiting" }, table(["Ticket", "Team", "Status", "Waiting on"], dep.waiting.map((w) => [`${w.key} ${w.summary}`, w.team || "", w.status, on(w)]))] : []),
+      ...(dep.startedEarly.length ? [{ t: "h3", text: "Started before the input was done" }, ul(dep.startedEarly.map((w) => `${w.key} (${w.status}) is waiting on ${on(w)}`))] : []),
+      ...(dep.ready.length ? [{ t: "h3", text: "Ready to start now" }, ul(dep.ready.map((x) => `${x.key} ${x.summary}`))] : []),
+      ...((P.handoffs || []).length ? [{ t: "h3", text: "Handoffs between teams" }, table(["Handoff", "From", "To", "Owner", "Due", "Status", "Blocks"], P.handoffs.map((h2) => [h2.what, h2.from, h2.to, h2.owner || "", h2.due ? fmtWhen(h2.due) : "", h2.status, h2.blocks || ""]))] : []));
+  }
+
   sec("Risk analysis",
     table(["Factor", "Points", "Detail"], [...risk.factors].sort((a, b) => b.points - a.points).map((f) => [f.label, `${f.points}/${f.max}`, f.detail])),
     ...(risk.recommendations.length ? [{ t: "h3", text: "What to do about it" }, { t: "ol", items: risk.recommendations.map((r) => ({ bold: r.label, text: r.advice })) }] : []));
@@ -1294,6 +1514,7 @@ window.__STANDALONE = true;
 // The same engine and risk model the server uses run here, in the browser.
 const { evaluate } = __mod_engine;
 const { computeRisk } = __mod_risk;
+const { analyzeDependencies, parseKeys, TEAMS, HANDOFF_STATUS } = __mod_deps;
 const { defaultPlan, blankPlan, nextPlan, applyTemplate, generateRunbook, planToSnapshot, planState, planConfig, briefMarkdown, TYPES, PRIORITIES, TICKET_TYPES, STATUSES, AREAS, ENVIRONMENTS, STRATEGIES, CHECK_STATES, PHASES, ROLE_KEYS, TEMPLATES } = __mod_plan;
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -1328,6 +1549,8 @@ function fillDefaults(def, val) {
 /* ---------- the release library: every release you have entered, saved in this browser ---------- */
 
 const newId = () => "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+// What a saved plan is filled in from. Handoffs start empty, so an older plan never picks up the example's.
+const FILL = () => ({ ...defaultPlan(), handoffs: [] });
 const validPlan = (p) => Boolean(p && Array.isArray(p.tickets) && p.release);
 
 function loadLib() {
@@ -1338,14 +1561,14 @@ function loadLib() {
       const order = (l.order || []).filter((id) => validPlan(l.items?.[id]));
       if (order.length) {
         const items = {};
-        for (const id of order) items[id] = { ...fillDefaults(defaultPlan(), l.items[id]), id };
+        for (const id of order) items[id] = { ...fillDefaults(FILL(), l.items[id]), id };
         return { current: items[l.current] ? l.current : order[0], order, items };
       }
     }
     const old = store.get(OLD_KEY); // keep whatever the first version saved
     if (old) {
       const p = JSON.parse(old);
-      if (validPlan(p)) { const id = newId(); return { current: id, order: [id], items: { [id]: { ...fillDefaults(defaultPlan(), p), id } } }; }
+      if (validPlan(p)) { const id = newId(); return { current: id, order: [id], items: { [id]: { ...fillDefaults(FILL(), p), id } } }; }
     }
   } catch { /* fall through to the example */ }
   const id = newId();
@@ -1423,7 +1646,7 @@ function showConflict(message) {
   el.innerHTML = `${esc(message || "Someone else changed this release.")} Your edits here are <strong>not saved</strong>. <button class="btn small" type="button" data-act="conflict-load">Load their version</button> <button class="btn small" type="button" data-act="conflict-copy">Keep mine as a copy</button>`;
 }
 
-const fromServer = (r) => ({ ...fillDefaults(defaultPlan(), r.plan), id: r.id });
+const fromServer = (r) => ({ ...fillDefaults(FILL(), r.plan), id: r.id });
 function adopt(r) {
   const plan = fromServer(r);
   lib.items[r.id] = plan;
@@ -1619,8 +1842,12 @@ function renderInputs() {
       { p: "scope.velocity", l: "Team velocity", t: "number", suffix: "points per working day" },
       { p: "scope.bigAt", l: "Large ticket at", t: "number", suffix: "points or more" },
     ].map(fieldHtml).join("")}</div>
-     <div class="tablewrap"><table class="tbl" style="min-width:1020px"><thead><tr><th>Key</th><th>Summary</th><th>Type</th><th>Pri</th><th>Pts</th><th>Status</th><th>Assignee</th><th>Area</th><th title="Includes a database migration">Mig</th><th title="Customers will see this">Cust</th><th title="Lacks automated tests">No tests</th><th></th></tr></thead><tbody id="tickets-body"></tbody></table></div>
+     <div class="tablewrap"><table class="tbl tk" style="min-width:1340px"><thead><tr><th>Key</th><th>Summary</th><th title="The team doing the work">Team</th><th title="Tickets that must be Done first. Separate keys with commas.">Blocked by</th><th>Type</th><th>Pri</th><th>Pts</th><th>Status</th><th>Assignee</th><th>Area</th><th title="Includes a database migration">Mig</th><th title="Customers will see this">Cust</th><th title="Lacks automated tests">No tests</th><th></th></tr></thead><tbody id="tickets-body"></tbody></table></div>
      <div class="row-actions"><button class="btn small" type="button" data-act="add-ticket">Add ticket</button><button class="btn small" type="button" data-act="pull-jira" id="b-jira">Pull from Jira</button><button class="btn small" type="button" data-act="refresh-jira" id="b-jira-refresh" title="Update statuses and points of the tickets below, and add new ones. Keeps tickets you typed by hand.">Refresh from Jira</button><span id="tk-clear"></span><span class="msg" id="tk-sum"></span><span class="msg" id="jira-msg"></span></div>`);
+
+  html += section("handoffs", "Handoffs between teams", "Work one team must hand to another before it can start. Each handoff blocks the tickets you name until it is Done.",
+    `<div class="tablewrap"><table class="tbl" style="min-width:1000px"><thead><tr><th>Handed over</th><th>From</th><th>To</th><th>Owner</th><th>Due</th><th>Status</th><th title="Ticket keys, separated by commas">Blocks</th><th></th></tr></thead><tbody id="handoffs-body"></tbody></table></div>
+     <div class="row-actions"><button class="btn small" type="button" data-act="add-handoff">Add handoff</button><span class="msg">Ticket-to-ticket dependencies go in the Blocked by column above.</span></div>`);
 
   html += section("signals", "Quality signals", "What the engine checks against budgets. With GitHub and CI connected these fill in on their own.",
     SIGNAL_GROUPS.map((g) => `<div class="sec-head"><h2>${esc(g.title)}</h2></div><div class="fields">${g.fields.map(fieldHtml).join("")}</div>`).join(""));
@@ -1640,9 +1867,37 @@ function renderInputs() {
   renderSignoffs();
   renderPeopleList();
   renderTickets();
+  renderHandoffs();
   renderRunbook();
   renderClear(true);
   updateJiraButton();
+}
+
+const TEAM_OPTS = [{ v: "", l: "—" }, ...TEAMS.map((x) => ({ v: x, l: x }))];
+
+/** A note when a "blocked by" names a ticket that is not in this release. */
+function blockedUnknown(t) {
+  const known = new Set(P.tickets.map((x) => String(x.key).toUpperCase()));
+  const bad = parseKeys(t.blockedBy).filter((k) => !known.has(k) && k !== String(t.key).toUpperCase());
+  return bad.length ? `${bad.join(", ")} ${bad.length === 1 ? "is" : "are"} not in this release's ticket list, so ${bad.length === 1 ? "it counts" : "they count"} as unresolved.` : "";
+}
+
+function renderHandoffs() {
+  const body = $("#handoffs-body");
+  if (!body) return;
+  P.handoffs ||= [];
+  body.innerHTML = P.handoffs.map((h, i) => {
+    const b = `handoffs.${i}`;
+    return `<tr>
+      <td><input class="s" type="text" data-p="${b}.what" value="${esc(h.what)}" placeholder="Final designs" aria-label="What is handed over"></td>
+      <td>${selectHtml(`${b}.from`, TEAM_OPTS, h.from || "", `class="tm" aria-label="From team"`)}</td>
+      <td>${selectHtml(`${b}.to`, TEAM_OPTS, h.to || "", `class="tm" aria-label="To team"`)}</td>
+      <td><input class="ow" type="text" list="people-list" data-p="${b}.owner" value="${esc(h.owner)}" aria-label="Owner"></td>
+      <td><input class="wh" type="datetime-local" data-p="${b}.due" value="${esc(h.due)}" aria-label="Due"></td>
+      <td>${selectHtml(`${b}.status`, HANDOFF_STATUS, h.status || "Not started", `class="st" aria-label="Status"`)}</td>
+      <td><input class="bb mono" type="text" data-p="${b}.blocks" value="${esc(h.blocks)}" placeholder="REL-1, REL-2" aria-label="Tickets this blocks"></td>
+      <td><button class="icon-btn" type="button" data-act="del-handoff" data-i="${i}" aria-label="Remove handoff">×</button></td></tr>`;
+  }).join("") || `<tr><td colspan="8" class="msg">No handoffs yet. Add one for anything a team must hand over before another can start, such as designs before tickets, or a merge before QA.</td></tr>`;
 }
 
 function renderTickets() {
@@ -1652,6 +1907,8 @@ function renderTickets() {
     return `<tr>
       <td><input class="k mono" type="text" data-p="${b}.key" value="${esc(t.key)}" aria-label="Ticket key"></td>
       <td><input class="s" type="text" data-p="${b}.summary" value="${esc(t.summary)}" aria-label="Summary for ${esc(t.key)}"></td>
+      <td>${selectHtml(`${b}.team`, TEAM_OPTS, t.team || "", `class="tm" aria-label="Team for ${esc(t.key)}"`)}</td>
+      <td><input class="bb mono${blockedUnknown(t) ? " warn-in" : ""}" type="text" data-p="${b}.blockedBy" value="${esc(t.blockedBy || "")}" placeholder="REL-1, REL-2" aria-label="Blocked by, for ${esc(t.key)}"${blockedUnknown(t) ? ` title="${esc(blockedUnknown(t))}"` : ""}></td>
       <td>${selectHtml(`${b}.type`, TICKET_TYPES, t.type, `class="ty" aria-label="Type"`)}</td>
       <td>${selectHtml(`${b}.priority`, PRIORITIES, t.priority, `class="pr" aria-label="Priority"`)}</td>
       <td><input class="pt" type="number" min="0" step="0.5" data-p="${b}.points" value="${esc(t.points)}" aria-label="Story points for ${esc(t.key)}"></td>
@@ -1660,7 +1917,7 @@ function renderTickets() {
       <td>${selectHtml(`${b}.area`, AREAS, t.area, `class="ar" aria-label="Area"`)}</td>
       ${tag("migration", "Migration")}${tag("customerFacing", "Customer facing")}${tag("untested", "Lacks tests")}
       <td><button class="icon-btn" type="button" data-act="del-ticket" data-i="${i}" aria-label="Remove ${esc(t.key)}">×</button></td></tr>`;
-  }).join("") || `<tr><td colspan="12" class="msg">No tickets yet. Add one, or pull the fix version from Jira.</td></tr>`;
+  }).join("") || `<tr><td colspan="14" class="msg">No tickets yet. Add one, or pull the fix version from Jira.</td></tr>`;
 }
 
 function renderRunbook() {
@@ -1793,7 +2050,8 @@ function compute() {
   const snapshot = planToSnapshot(P, now);
   const result = evaluate(snapshot, planConfig(P), planState(P));
   const risk = computeRisk(P, now);
-  return { now, result, risk, brief: briefMarkdown(P, result, risk, now) };
+  const deps = analyzeDependencies(P.tickets, P.handoffs, now, Date.parse(P.when.freezeAt) || null);
+  return { now, result, risk, deps, brief: briefMarkdown(P, result, risk, now) };
 }
 
 const ratioColor = (r) => (r >= 0.66 ? "var(--bad)" : r >= 0.33 ? "var(--warn)" : "var(--good)");
@@ -1856,6 +2114,24 @@ function renderPoints({ risk }) {
     <div>${areas.map(([a, v]) => `<div class="area-row"><span>${esc(a)}</span><div class="fb"><i style="width:${v.total ? (v.done / v.total) * 100 : 0}%"></i></div><span class="mono">${v.done}/${v.total}</span></div>`).join("")}</div></section>`;
 }
 
+function renderDeps({ result, deps }) {
+  const c = result.criteria.find((x) => x.id === "deps");
+  const head = `<div class="panel-head"><h2>Dependencies</h2>${c ? chip(c.effective) : ""}</div>`;
+  if (!deps.any) return `<section class="panel">${head}<div class="msg">Nothing entered yet. Use <strong>Team</strong> and <strong>Blocked by</strong> on the tickets, and <strong>Handoffs between teams</strong> below them, to show what waits on what. Pulling from Jira fills in "is blocked by" links for you.</div></section>`;
+  const on = (w) => w.on.map((x) => (x.kind === "handoff" ? `${esc(x.what)} <span class="msg">(${esc(x.team || "handoff")}, ${esc(x.status)})</span>` : `<span class="mono">${esc(x.key)}</span> <span class="msg">(${esc(x.status)})</span>`)).join(", ");
+  const h3 = (t) => `<div class="sec-head"><h2>${esc(t)}</h2></div>`;
+  let html = head + (c ? `<div class="msg">${esc(c.detail)}</div>` : "");
+  if (deps.cycles.length) html += `<div class="banner bad" role="alert"><strong>Circular dependency.</strong><span>${deps.cycles.map((x) => esc([...x, x[0]].join(" → "))).join("; ")}. None of these can start until one of the links is removed.</span></div>`;
+  if (deps.longestChain.length >= 2) html += h3("Longest chain, in the order it must happen") + `<div class="ladder">${deps.longestChain.keys.map((k, i) => `${i ? '<span class="arrow">→</span>' : ""}<span class="step mono">${esc(k)}</span>`).join("")}</div>`;
+  if (deps.finishFirst.length) html += h3("Finish these first") + `<ul class="plain">${deps.finishFirst.map((x) => `<li><span class="mono">${esc(x.key)}</span>${x.team ? ` <span class="msg">${esc(x.team)}</span>` : ""} ${esc(x.summary)}: holds up ${x.unblocks} ${x.unblocks === 1 ? "ticket" : "tickets"}</li>`).join("")}</ul>`;
+  if (deps.waiting.length) html += h3("Waiting") + `<div class="tablewrap"><table class="tbl"><thead><tr><th>Ticket</th><th>Team</th><th>Status</th><th>Waiting on</th></tr></thead><tbody>${deps.waiting.map((w) => `<tr><td><span class="mono">${esc(w.key)}</span> ${esc(w.summary)}</td><td>${esc(w.team || "—")}</td><td>${esc(w.status)}</td><td>${on(w)}</td></tr>`).join("")}</tbody></table></div>`;
+  if (deps.startedEarly.length) html += h3("Started before the input was done") + `<ul class="plain">${deps.startedEarly.map((w) => `<li><span class="mono">${esc(w.key)}</span> is ${esc(w.status.toLowerCase())} but waiting on ${on(w)}</li>`).join("")}</ul>`;
+  if (deps.ready.length) html += h3("Ready to start now") + `<ul class="plain">${deps.ready.map((x) => `<li><span class="mono">${esc(x.key)}</span> ${esc(x.summary)}</li>`).join("")}</ul>`;
+  const lateH = [...deps.handoffs.overdue.map((x) => `${esc(x.what)} (${esc(x.from || "?")} to ${esc(x.to || "?")}) is overdue`), ...deps.handoffs.blocked.map((x) => `${esc(x.what)} is blocked`), ...deps.handoffs.afterFreeze.map((x) => `${esc(x.what)} is due after the code freeze`)];
+  if (lateH.length) html += h3("Handoffs to chase") + `<ul class="plain">${lateH.map((x) => `<li>${x}</li>`).join("")}</ul>`;
+  return `<section class="panel">${html}</section>`;
+}
+
 function renderCriteria({ result }) {
   const order = { fail: 0, warn: 1, pending: 2, waived: 3, pass: 4 };
   const sorted = [...result.criteria].sort((a, b) => order[a.effective] - order[b.effective]);
@@ -1890,7 +2166,7 @@ function renderResults() {
   const fresh = !P.release.name.trim() && P.tickets.length === 0 && !Number(P.signals.ci.total);
   const note = fresh ? `<div class="banner"><strong>New release.</strong><span>Name it and set the dates on the left, then add tickets or pull them from Jira. The call stays HOLD until the checks have data, and anything unknown counts as risk.</span></div>` : "";
   renderRelSelect();
-  $("#results").innerHTML = note + renderVerdict(last) + renderRisk(last) + renderPoints(last) + renderCriteria(last) + renderBrief(last);
+  $("#results").innerHTML = note + renderVerdict(last) + renderRisk(last) + renderPoints(last) + renderDeps(last) + renderCriteria(last) + renderBrief(last);
   const p = last.risk.points;
   const sum = $("#tk-sum");
   if (sum) sum.textContent = `${p.tickets} tickets · ${p.total} points · ${p.done} done`;
@@ -1931,7 +2207,7 @@ function onEdit(e) {
 document.addEventListener("input", onEdit);
 document.addEventListener("change", onEdit);
 
-const blankTicket = () => ({ key: "REL-", summary: "", type: "Story", priority: "P2", points: 0, status: "To do", assignee: "", area: "Core", tags: { migration: false, customerFacing: false, untested: false } });
+const blankTicket = () => ({ key: "REL-", summary: "", type: "Story", priority: "P2", points: 0, status: "To do", assignee: "", area: "Core", team: "", blockedBy: "", tags: { migration: false, customerFacing: false, untested: false } });
 
 function download() {} // file downloads are not available in an embedded page
 const slug = () => (P.release.name || "release").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
@@ -1966,7 +2242,7 @@ async function refreshJira() {
       if (!r) return t;
       byKey.delete(t.key);
       updated++;
-      return { ...t, ...r, tags: { ...(r.tags || {}), ...(t.tags || {}) } };
+      return { ...t, ...r, team: t.team || r.team || "", blockedBy: r.blockedBy || t.blockedBy || "", tags: { ...(r.tags || {}), ...(t.tags || {}) } };
     });
     const added = [...byKey.values()];
     P.tickets.push(...added);
@@ -2002,6 +2278,12 @@ document.addEventListener("click", async (e) => {
     P.tickets.push(blankTicket()); renderTickets(); changed();
     const rows = document.querySelectorAll("#tickets-body tr"); rows[rows.length - 1]?.querySelector("input")?.focus();
   } else if (act === "del-ticket") { P.tickets.splice(i, 1); renderTickets(); changed(); }
+  else if (act === "add-handoff") {
+    (P.handoffs ||= []).push({ what: "", from: "Design", to: "Frontend", owner: "", due: P.when.freezeAt || "", status: "Not started", blocks: "" });
+    renderHandoffs(); changed();
+    const rows = document.querySelectorAll("#handoffs-body tr"); rows[rows.length - 1]?.querySelector("input")?.focus();
+  }
+  else if (act === "del-handoff") { P.handoffs.splice(i, 1); renderHandoffs(); changed(); }
   else if (act === "add-step") { P.runbook.push({ id: "s" + Date.now(), phase: "Deploy", step: "", owner: P.people.releaseManager, at: P.when.deployAt, status: "todo" }); renderRunbook(); changed(); }
   else if (act === "del-step") { P.runbook.splice(i, 1); renderRunbook(); changed(); }
   else if (act === "regen-runbook") { P.runbook = generateRunbook(P); renderRunbook(); changed(); say("rb-msg", "Runbook regenerated from the plan.", "ok"); }
@@ -2144,7 +2426,7 @@ $("#import-file").addEventListener("change", async (e) => {
   try {
     const p = JSON.parse(await file.text());
     if (!p || !Array.isArray(p.tickets) || !p.release) throw new Error("That file is not a release plan.");
-    addRelease(fillDefaults(defaultPlan(), p));
+    addRelease(fillDefaults(FILL(), p));
     sayRel(`Imported “${P.release.name || "Untitled release"}” as a new release.`, false, "ok");
   } catch (err) {
     $("#results").insertAdjacentHTML("afterbegin", `<div class="banner bad" role="alert"><strong>Could not import.</strong><span>${esc(err.message)}</span></div>`);

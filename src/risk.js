@@ -1,6 +1,8 @@
 // Release risk model. Pure functions, no I/O. Runs in Node and in the browser.
 // Factor weights add up to 100, so the score reads as "points of risk out of 100".
 
+import { analyzeDependencies } from "./deps.js";
+
 export const DONE = "Done";
 export const STATUS_ORDER = ["To do", "In progress", "In review", "Done"];
 export const SENSITIVE_AREAS = ["Payments", "Auth", "Data"];
@@ -108,17 +110,17 @@ export function computeRisk(plan, now = Date.now()) {
   const add = (id, label, max, points, detail, advice) =>
     factors.push({ id, label, max, points: Math.max(0, Math.min(max, Math.round(points))), detail, advice });
 
-  // 1. Unfinished scope (16)
+  // 1. Unfinished scope (14)
   const remPct = pts.total ? pts.remaining / pts.total : 0.5;
   const shortfall = fc.state === "behind" ? 6 : fc.state === "tight" ? 3 : fc.state === "after-freeze" ? 6 : 0;
-  add("scope", "Unfinished scope", 16, remPct * 10 + shortfall,
+  add("scope", "Unfinished scope", 14, remPct * 10 + shortfall,
     pts.total ? `${pts.remaining} of ${pts.total} points not done (${100 - pts.pctDone}%). ${fc.detail}` : "No story points entered, so scope cannot be measured.",
     "Cut or defer unfinished tickets before the go/no-go meeting. Anything still open after the freeze needs a named owner and a feature flag.");
 
-  // 2. Open defects (18)
+  // 2. Open defects (16)
   const openBugs = tickets.filter((t) => t.status !== DONE && t.type === "Bug");
   const bugs = (p) => openBugs.filter((t) => t.priority === p).length;
-  add("blockers", "Open defects", 18, bugs("P0") * 10 + bugs("P1") * 4 + bugs("P2"),
+  add("blockers", "Open defects", 16, bugs("P0") * 10 + bugs("P1") * 4 + bugs("P2"),
     `${bugs("P0")} P0, ${bugs("P1")} P1 and ${bugs("P2")} P2 bugs are open.`,
     "Resolve every P0 before release. For each open P1, agree a fix date or record a waiver with a named approver.");
 
@@ -156,7 +158,7 @@ export function computeRisk(plan, now = Date.now()) {
     `${plural(late, "PR", "PRs")} merged after the freeze, ${plural(unapproved, "merged PR", "merged PRs")} without an approval.`,
     "Review every post-freeze change by hand. Revert anything that does not have a clear reason to be in this release.");
 
-  // 8. Data migration (10)
+  // 8. Data migration (9)
   const hasMigration = tickets.some((t) => t.tags?.migration) || (checks.migration && checks.migration !== "na");
   let migPts = 0, migDetail = "No migration in this release.";
   if (hasMigration) {
@@ -164,14 +166,14 @@ export function computeRisk(plan, now = Date.now()) {
     migPts = m === "pass" ? 1 : m === "fail" ? 10 : 7;
     migDetail = m === "pass" ? "Migration dry run passed." : m === "fail" ? "Migration dry run failed." : "Migration is in scope and has not been dry-run on production-size data.";
   }
-  add("migration", "Data migration", 10, migPts, migDetail,
+  add("migration", "Data migration", 9, migPts, migDetail,
     "Dry-run the migration on production-size data and measure lock time. Decide in advance whether it can be rolled back.");
 
-  // 9. Rollback readiness (8)
+  // 9. Rollback readiness (7)
   const rb = checks.rollback;
   const planText = String(how.rollbackPlan || "").trim();
   const rbMin = num(how.rollbackMinutes);
-  add("rollback", "Rollback readiness", 8,
+  add("rollback", "Rollback readiness", 7,
     (rb === "pass" ? 0 : rb === "fail" ? 8 : 6) + (planText.length < 20 ? 2 : 0) + (rbMin > 30 ? 2 : 0),
     `Rehearsal ${rb === "pass" ? "passed" : rb === "fail" ? "failed" : "not done"}; ${planText.length < 20 ? "no written rollback plan" : "rollback plan written"}; target ${rbMin || "?"} minutes.`,
     "Rehearse the rollback on staging, write the steps down, and keep the target under 30 minutes.");
@@ -206,6 +208,22 @@ export function computeRisk(plan, now = Date.now()) {
   add("rollout", "Rollout strategy", 5, base + (how.flagsDefaultOff ? 0 : 2),
     `${{ bigbang: "All at once", phased: "Region by region", bluegreen: "Blue/green switch", canary: "Canary with staged percentages" }[strat] || "No strategy chosen"}; new features ${how.flagsDefaultOff ? "ship behind flags that default off" : "are not behind flags"}.`,
     "Use a staged rollout and put new behavior behind flags that default off, so rollback is a toggle instead of a deploy.");
+
+  // 13. Dependencies (6): work that waits on other work, and handoffs between teams
+  const dep = analyzeDependencies(tickets, plan.handoffs, now, parseLocal(plan.when?.freezeAt));
+  const chainLen = dep.longestChain.length;
+  const first = dep.finishFirst[0];
+  add("dependencies", "Dependencies between work", 6,
+    (dep.cycles.length ? 6 : 0) + Math.min(3, dep.waiting.length * 0.75) + Math.min(2, dep.startedEarly.length * 0.75) + Math.min(2, dep.handoffs.overdue.length + dep.handoffs.blocked.length) + (chainLen >= 3 ? 1 : 0) + Math.min(1, dep.outside.length * 0.5),
+    !dep.any ? "No dependencies entered."
+      : [
+        dep.cycles.length ? `${plural(dep.cycles.length, "circular dependency", "circular dependencies")}` : "",
+        dep.waiting.length ? `${plural(dep.waiting.length, "ticket", "tickets")} waiting on other work${dep.startedEarly.some((x) => x.status !== DONE) ? `, ${dep.startedEarly.filter((x) => x.status !== DONE).length} already started` : ""}` : "",
+        dep.startedEarly.some((x) => x.status === DONE) ? `${plural(dep.startedEarly.filter((x) => x.status === DONE).length, "ticket", "tickets")} marked Done before what they depend on` : "",
+        dep.handoffs.overdue.length ? `${plural(dep.handoffs.overdue.length, "handoff", "handoffs")} overdue` : "",
+        chainLen >= 2 ? `longest chain: ${dep.longestChain.keys.join(" → ")}` : "",
+      ].filter(Boolean).join("; ") + ".",
+    `${first ? `Finish ${first.key} first: it holds up ${plural(first.unblocks, "other ticket", "other tickets")}. ` : ""}Confirm each handoff with its owner, and do not let dependent work start from guesses. Work that waits on something unfinished is the usual cause of late scope.`);
 
   const score = Math.max(0, Math.min(100, factors.reduce((n, f) => n + f.points, 0)));
   const level = levelFor(score);

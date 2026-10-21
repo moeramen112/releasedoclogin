@@ -1,5 +1,5 @@
 // Builds dist/release-planner.html: the planner as one self-contained page with no server.
-// It bundles engine.js, risk.js, plan.js and plan-ui.js, each in its own scope so names cannot collide.
+// It bundles deps.js, engine.js, risk.js, plan.js and plan-ui.js, each in its own scope so names cannot collide.
 // Run: node scripts/build-standalone.mjs
 
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -21,6 +21,7 @@ const html = read("public/plan.html");
 const bodyInner = html.slice(html.indexOf("<body>") + 6, html.indexOf('<script type="module"')).replace(/<nav class="nav"[\s\S]*?<\/nav>/, "").trim();
 const css = read("public/styles.css");
 const scripts = [
+  wrap("deps", read("src/deps.js")),
   wrap("engine", read("src/engine.js")),
   wrap("risk", read("src/risk.js")),
   wrap("plan", read("src/plan.js")),

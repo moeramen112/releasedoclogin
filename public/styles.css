@@ -196,6 +196,7 @@ td .id { font-family: var(--font-data); font-size: 12px; color: var(--muted); di
 .tbl input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
 .tbl .k { width: 92px; } .tbl .s { min-width: 220px; } .tbl .ty { width: 84px; } .tbl .pr { width: 66px; } .tbl .pt { width: 62px; }
 .tbl .st { width: 118px; } .tbl .as { width: 110px; } .tbl .ar { width: 100px; } .tbl .x { width: 30px; }
+.tbl .tm { width: 112px; } .tbl .bb { width: 150px; } .tbl .warn-in { border-color: var(--warn); background: var(--warn-bg); }
 .tbl .ph { width: 108px; } .tbl .ow { width: 140px; } .tbl .wh { width: 190px; }
 .row-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .msg { font-size: 12px; color: var(--muted); }
@@ -289,3 +290,5 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 .who a:hover { color: var(--accent); }
 .save-state { font-size: 12px; }
 .viewonly { opacity: .75; }
+ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.tbl.tk .s { min-width: 170px; }

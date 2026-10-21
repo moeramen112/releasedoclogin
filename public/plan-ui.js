@@ -2,6 +2,7 @@
 // The same engine and risk model the server uses run here, in the browser.
 import { evaluate } from "/engine.js";
 import { computeRisk } from "/risk.js";
+import { analyzeDependencies, parseKeys, TEAMS, HANDOFF_STATUS } from "/deps.js";
 import { defaultPlan, blankPlan, nextPlan, applyTemplate, generateRunbook, planToSnapshot, planState, planConfig, briefMarkdown, TYPES, PRIORITIES, TICKET_TYPES, STATUSES, AREAS, ENVIRONMENTS, STRATEGIES, CHECK_STATES, PHASES, ROLE_KEYS, TEMPLATES } from "/plan.js";
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -37,6 +38,8 @@ function fillDefaults(def, val) {
 /* ---------- the release library: every release you have entered, saved in this browser ---------- */
 
 const newId = () => "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+// What a saved plan is filled in from. Handoffs start empty, so an older plan never picks up the example's.
+const FILL = () => ({ ...defaultPlan(), handoffs: [] });
 const validPlan = (p) => Boolean(p && Array.isArray(p.tickets) && p.release);
 
 function loadLib() {
@@ -47,14 +50,14 @@ function loadLib() {
       const order = (l.order || []).filter((id) => validPlan(l.items?.[id]));
       if (order.length) {
         const items = {};
-        for (const id of order) items[id] = { ...fillDefaults(defaultPlan(), l.items[id]), id };
+        for (const id of order) items[id] = { ...fillDefaults(FILL(), l.items[id]), id };
         return { current: items[l.current] ? l.current : order[0], order, items };
       }
     }
     const old = store.get(OLD_KEY); // keep whatever the first version saved
     if (old) {
       const p = JSON.parse(old);
-      if (validPlan(p)) { const id = newId(); return { current: id, order: [id], items: { [id]: { ...fillDefaults(defaultPlan(), p), id } } }; }
+      if (validPlan(p)) { const id = newId(); return { current: id, order: [id], items: { [id]: { ...fillDefaults(FILL(), p), id } } }; }
     }
   } catch { /* fall through to the example */ }
   const id = newId();
@@ -132,7 +135,7 @@ function showConflict(message) {
   el.innerHTML = `${esc(message || "Someone else changed this release.")} Your edits here are <strong>not saved</strong>. <button class="btn small" type="button" data-act="conflict-load">Load their version</button> <button class="btn small" type="button" data-act="conflict-copy">Keep mine as a copy</button>`;
 }
 
-const fromServer = (r) => ({ ...fillDefaults(defaultPlan(), r.plan), id: r.id });
+const fromServer = (r) => ({ ...fillDefaults(FILL(), r.plan), id: r.id });
 function adopt(r) {
   const plan = fromServer(r);
   lib.items[r.id] = plan;
@@ -328,8 +331,12 @@ function renderInputs() {
       { p: "scope.velocity", l: "Team velocity", t: "number", suffix: "points per working day" },
       { p: "scope.bigAt", l: "Large ticket at", t: "number", suffix: "points or more" },
     ].map(fieldHtml).join("")}</div>
-     <div class="tablewrap"><table class="tbl" style="min-width:1020px"><thead><tr><th>Key</th><th>Summary</th><th>Type</th><th>Pri</th><th>Pts</th><th>Status</th><th>Assignee</th><th>Area</th><th title="Includes a database migration">Mig</th><th title="Customers will see this">Cust</th><th title="Lacks automated tests">No tests</th><th></th></tr></thead><tbody id="tickets-body"></tbody></table></div>
+     <div class="tablewrap"><table class="tbl tk" style="min-width:1340px"><thead><tr><th>Key</th><th>Summary</th><th title="The team doing the work">Team</th><th title="Tickets that must be Done first. Separate keys with commas.">Blocked by</th><th>Type</th><th>Pri</th><th>Pts</th><th>Status</th><th>Assignee</th><th>Area</th><th title="Includes a database migration">Mig</th><th title="Customers will see this">Cust</th><th title="Lacks automated tests">No tests</th><th></th></tr></thead><tbody id="tickets-body"></tbody></table></div>
      <div class="row-actions"><button class="btn small" type="button" data-act="add-ticket">Add ticket</button><button class="btn small" type="button" data-act="pull-jira" id="b-jira">Pull from Jira</button><button class="btn small" type="button" data-act="refresh-jira" id="b-jira-refresh" title="Update statuses and points of the tickets below, and add new ones. Keeps tickets you typed by hand.">Refresh from Jira</button><span id="tk-clear"></span><span class="msg" id="tk-sum"></span><span class="msg" id="jira-msg"></span></div>`);
+
+  html += section("handoffs", "Handoffs between teams", "Work one team must hand to another before it can start. Each handoff blocks the tickets you name until it is Done.",
+    `<div class="tablewrap"><table class="tbl" style="min-width:1000px"><thead><tr><th>Handed over</th><th>From</th><th>To</th><th>Owner</th><th>Due</th><th>Status</th><th title="Ticket keys, separated by commas">Blocks</th><th></th></tr></thead><tbody id="handoffs-body"></tbody></table></div>
+     <div class="row-actions"><button class="btn small" type="button" data-act="add-handoff">Add handoff</button><span class="msg">Ticket-to-ticket dependencies go in the Blocked by column above.</span></div>`);
 
   html += section("signals", "Quality signals", "What the engine checks against budgets. With GitHub and CI connected these fill in on their own.",
     SIGNAL_GROUPS.map((g) => `<div class="sec-head"><h2>${esc(g.title)}</h2></div><div class="fields">${g.fields.map(fieldHtml).join("")}</div>`).join(""));
@@ -349,9 +356,37 @@ function renderInputs() {
   renderSignoffs();
   renderPeopleList();
   renderTickets();
+  renderHandoffs();
   renderRunbook();
   renderClear(true);
   updateJiraButton();
+}
+
+const TEAM_OPTS = [{ v: "", l: "—" }, ...TEAMS.map((x) => ({ v: x, l: x }))];
+
+/** A note when a "blocked by" names a ticket that is not in this release. */
+function blockedUnknown(t) {
+  const known = new Set(P.tickets.map((x) => String(x.key).toUpperCase()));
+  const bad = parseKeys(t.blockedBy).filter((k) => !known.has(k) && k !== String(t.key).toUpperCase());
+  return bad.length ? `${bad.join(", ")} ${bad.length === 1 ? "is" : "are"} not in this release's ticket list, so ${bad.length === 1 ? "it counts" : "they count"} as unresolved.` : "";
+}
+
+function renderHandoffs() {
+  const body = $("#handoffs-body");
+  if (!body) return;
+  P.handoffs ||= [];
+  body.innerHTML = P.handoffs.map((h, i) => {
+    const b = `handoffs.${i}`;
+    return `<tr>
+      <td><input class="s" type="text" data-p="${b}.what" value="${esc(h.what)}" placeholder="Final designs" aria-label="What is handed over"></td>
+      <td>${selectHtml(`${b}.from`, TEAM_OPTS, h.from || "", `class="tm" aria-label="From team"`)}</td>
+      <td>${selectHtml(`${b}.to`, TEAM_OPTS, h.to || "", `class="tm" aria-label="To team"`)}</td>
+      <td><input class="ow" type="text" list="people-list" data-p="${b}.owner" value="${esc(h.owner)}" aria-label="Owner"></td>
+      <td><input class="wh" type="datetime-local" data-p="${b}.due" value="${esc(h.due)}" aria-label="Due"></td>
+      <td>${selectHtml(`${b}.status`, HANDOFF_STATUS, h.status || "Not started", `class="st" aria-label="Status"`)}</td>
+      <td><input class="bb mono" type="text" data-p="${b}.blocks" value="${esc(h.blocks)}" placeholder="REL-1, REL-2" aria-label="Tickets this blocks"></td>
+      <td><button class="icon-btn" type="button" data-act="del-handoff" data-i="${i}" aria-label="Remove handoff">×</button></td></tr>`;
+  }).join("") || `<tr><td colspan="8" class="msg">No handoffs yet. Add one for anything a team must hand over before another can start, such as designs before tickets, or a merge before QA.</td></tr>`;
 }
 
 function renderTickets() {
@@ -361,6 +396,8 @@ function renderTickets() {
     return `<tr>
       <td><input class="k mono" type="text" data-p="${b}.key" value="${esc(t.key)}" aria-label="Ticket key"></td>
       <td><input class="s" type="text" data-p="${b}.summary" value="${esc(t.summary)}" aria-label="Summary for ${esc(t.key)}"></td>
+      <td>${selectHtml(`${b}.team`, TEAM_OPTS, t.team || "", `class="tm" aria-label="Team for ${esc(t.key)}"`)}</td>
+      <td><input class="bb mono${blockedUnknown(t) ? " warn-in" : ""}" type="text" data-p="${b}.blockedBy" value="${esc(t.blockedBy || "")}" placeholder="REL-1, REL-2" aria-label="Blocked by, for ${esc(t.key)}"${blockedUnknown(t) ? ` title="${esc(blockedUnknown(t))}"` : ""}></td>
       <td>${selectHtml(`${b}.type`, TICKET_TYPES, t.type, `class="ty" aria-label="Type"`)}</td>
       <td>${selectHtml(`${b}.priority`, PRIORITIES, t.priority, `class="pr" aria-label="Priority"`)}</td>
       <td><input class="pt" type="number" min="0" step="0.5" data-p="${b}.points" value="${esc(t.points)}" aria-label="Story points for ${esc(t.key)}"></td>
@@ -369,7 +406,7 @@ function renderTickets() {
       <td>${selectHtml(`${b}.area`, AREAS, t.area, `class="ar" aria-label="Area"`)}</td>
       ${tag("migration", "Migration")}${tag("customerFacing", "Customer facing")}${tag("untested", "Lacks tests")}
       <td><button class="icon-btn" type="button" data-act="del-ticket" data-i="${i}" aria-label="Remove ${esc(t.key)}">×</button></td></tr>`;
-  }).join("") || `<tr><td colspan="12" class="msg">No tickets yet. Add one, or pull the fix version from Jira.</td></tr>`;
+  }).join("") || `<tr><td colspan="14" class="msg">No tickets yet. Add one, or pull the fix version from Jira.</td></tr>`;
 }
 
 function renderRunbook() {
@@ -502,7 +539,8 @@ function compute() {
   const snapshot = planToSnapshot(P, now);
   const result = evaluate(snapshot, planConfig(P), planState(P));
   const risk = computeRisk(P, now);
-  return { now, result, risk, brief: briefMarkdown(P, result, risk, now) };
+  const deps = analyzeDependencies(P.tickets, P.handoffs, now, Date.parse(P.when.freezeAt) || null);
+  return { now, result, risk, deps, brief: briefMarkdown(P, result, risk, now) };
 }
 
 const ratioColor = (r) => (r >= 0.66 ? "var(--bad)" : r >= 0.33 ? "var(--warn)" : "var(--good)");
@@ -565,6 +603,24 @@ function renderPoints({ risk }) {
     <div>${areas.map(([a, v]) => `<div class="area-row"><span>${esc(a)}</span><div class="fb"><i style="width:${v.total ? (v.done / v.total) * 100 : 0}%"></i></div><span class="mono">${v.done}/${v.total}</span></div>`).join("")}</div></section>`;
 }
 
+function renderDeps({ result, deps }) {
+  const c = result.criteria.find((x) => x.id === "deps");
+  const head = `<div class="panel-head"><h2>Dependencies</h2>${c ? chip(c.effective) : ""}</div>`;
+  if (!deps.any) return `<section class="panel">${head}<div class="msg">Nothing entered yet. Use <strong>Team</strong> and <strong>Blocked by</strong> on the tickets, and <strong>Handoffs between teams</strong> below them, to show what waits on what. Pulling from Jira fills in "is blocked by" links for you.</div></section>`;
+  const on = (w) => w.on.map((x) => (x.kind === "handoff" ? `${esc(x.what)} <span class="msg">(${esc(x.team || "handoff")}, ${esc(x.status)})</span>` : `<span class="mono">${esc(x.key)}</span> <span class="msg">(${esc(x.status)})</span>`)).join(", ");
+  const h3 = (t) => `<div class="sec-head"><h2>${esc(t)}</h2></div>`;
+  let html = head + (c ? `<div class="msg">${esc(c.detail)}</div>` : "");
+  if (deps.cycles.length) html += `<div class="banner bad" role="alert"><strong>Circular dependency.</strong><span>${deps.cycles.map((x) => esc([...x, x[0]].join(" → "))).join("; ")}. None of these can start until one of the links is removed.</span></div>`;
+  if (deps.longestChain.length >= 2) html += h3("Longest chain, in the order it must happen") + `<div class="ladder">${deps.longestChain.keys.map((k, i) => `${i ? '<span class="arrow">→</span>' : ""}<span class="step mono">${esc(k)}</span>`).join("")}</div>`;
+  if (deps.finishFirst.length) html += h3("Finish these first") + `<ul class="plain">${deps.finishFirst.map((x) => `<li><span class="mono">${esc(x.key)}</span>${x.team ? ` <span class="msg">${esc(x.team)}</span>` : ""} ${esc(x.summary)}: holds up ${x.unblocks} ${x.unblocks === 1 ? "ticket" : "tickets"}</li>`).join("")}</ul>`;
+  if (deps.waiting.length) html += h3("Waiting") + `<div class="tablewrap"><table class="tbl"><thead><tr><th>Ticket</th><th>Team</th><th>Status</th><th>Waiting on</th></tr></thead><tbody>${deps.waiting.map((w) => `<tr><td><span class="mono">${esc(w.key)}</span> ${esc(w.summary)}</td><td>${esc(w.team || "—")}</td><td>${esc(w.status)}</td><td>${on(w)}</td></tr>`).join("")}</tbody></table></div>`;
+  if (deps.startedEarly.length) html += h3("Started before the input was done") + `<ul class="plain">${deps.startedEarly.map((w) => `<li><span class="mono">${esc(w.key)}</span> is ${esc(w.status.toLowerCase())} but waiting on ${on(w)}</li>`).join("")}</ul>`;
+  if (deps.ready.length) html += h3("Ready to start now") + `<ul class="plain">${deps.ready.map((x) => `<li><span class="mono">${esc(x.key)}</span> ${esc(x.summary)}</li>`).join("")}</ul>`;
+  const lateH = [...deps.handoffs.overdue.map((x) => `${esc(x.what)} (${esc(x.from || "?")} to ${esc(x.to || "?")}) is overdue`), ...deps.handoffs.blocked.map((x) => `${esc(x.what)} is blocked`), ...deps.handoffs.afterFreeze.map((x) => `${esc(x.what)} is due after the code freeze`)];
+  if (lateH.length) html += h3("Handoffs to chase") + `<ul class="plain">${lateH.map((x) => `<li>${x}</li>`).join("")}</ul>`;
+  return `<section class="panel">${html}</section>`;
+}
+
 function renderCriteria({ result }) {
   const order = { fail: 0, warn: 1, pending: 2, waived: 3, pass: 4 };
   const sorted = [...result.criteria].sort((a, b) => order[a.effective] - order[b.effective]);
@@ -599,7 +655,7 @@ function renderResults() {
   const fresh = !P.release.name.trim() && P.tickets.length === 0 && !Number(P.signals.ci.total);
   const note = fresh ? `<div class="banner"><strong>New release.</strong><span>Name it and set the dates on the left, then add tickets or pull them from Jira. The call stays HOLD until the checks have data, and anything unknown counts as risk.</span></div>` : "";
   renderRelSelect();
-  $("#results").innerHTML = note + renderVerdict(last) + renderRisk(last) + renderPoints(last) + renderCriteria(last) + renderBrief(last);
+  $("#results").innerHTML = note + renderVerdict(last) + renderRisk(last) + renderPoints(last) + renderDeps(last) + renderCriteria(last) + renderBrief(last);
   const p = last.risk.points;
   const sum = $("#tk-sum");
   if (sum) sum.textContent = `${p.tickets} tickets · ${p.total} points · ${p.done} done`;
@@ -640,7 +696,7 @@ function onEdit(e) {
 document.addEventListener("input", onEdit);
 document.addEventListener("change", onEdit);
 
-const blankTicket = () => ({ key: "REL-", summary: "", type: "Story", priority: "P2", points: 0, status: "To do", assignee: "", area: "Core", tags: { migration: false, customerFacing: false, untested: false } });
+const blankTicket = () => ({ key: "REL-", summary: "", type: "Story", priority: "P2", points: 0, status: "To do", assignee: "", area: "Core", team: "", blockedBy: "", tags: { migration: false, customerFacing: false, untested: false } });
 
 function download(name, text, type) {
   const url = URL.createObjectURL(new Blob([text], { type }));
@@ -681,7 +737,7 @@ async function refreshJira() {
       if (!r) return t;
       byKey.delete(t.key);
       updated++;
-      return { ...t, ...r, tags: { ...(r.tags || {}), ...(t.tags || {}) } };
+      return { ...t, ...r, team: t.team || r.team || "", blockedBy: r.blockedBy || t.blockedBy || "", tags: { ...(r.tags || {}), ...(t.tags || {}) } };
     });
     const added = [...byKey.values()];
     P.tickets.push(...added);
@@ -717,6 +773,12 @@ document.addEventListener("click", async (e) => {
     P.tickets.push(blankTicket()); renderTickets(); changed();
     const rows = document.querySelectorAll("#tickets-body tr"); rows[rows.length - 1]?.querySelector("input")?.focus();
   } else if (act === "del-ticket") { P.tickets.splice(i, 1); renderTickets(); changed(); }
+  else if (act === "add-handoff") {
+    (P.handoffs ||= []).push({ what: "", from: "Design", to: "Frontend", owner: "", due: P.when.freezeAt || "", status: "Not started", blocks: "" });
+    renderHandoffs(); changed();
+    const rows = document.querySelectorAll("#handoffs-body tr"); rows[rows.length - 1]?.querySelector("input")?.focus();
+  }
+  else if (act === "del-handoff") { P.handoffs.splice(i, 1); renderHandoffs(); changed(); }
   else if (act === "add-step") { P.runbook.push({ id: "s" + Date.now(), phase: "Deploy", step: "", owner: P.people.releaseManager, at: P.when.deployAt, status: "todo" }); renderRunbook(); changed(); }
   else if (act === "del-step") { P.runbook.splice(i, 1); renderRunbook(); changed(); }
   else if (act === "regen-runbook") { P.runbook = generateRunbook(P); renderRunbook(); changed(); say("rb-msg", "Runbook regenerated from the plan.", "ok"); }
@@ -859,7 +921,7 @@ $("#import-file").addEventListener("change", async (e) => {
   try {
     const p = JSON.parse(await file.text());
     if (!p || !Array.isArray(p.tickets) || !p.release) throw new Error("That file is not a release plan.");
-    addRelease(fillDefaults(defaultPlan(), p));
+    addRelease(fillDefaults(FILL(), p));
     sayRel(`Imported “${P.release.name || "Untitled release"}” as a new release.`, false, "ok");
   } catch (err) {
     $("#results").insertAdjacentHTML("afterbegin", `<div class="banner bad" role="alert"><strong>Could not import.</strong><span>${esc(err.message)}</span></div>`);

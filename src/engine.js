@@ -123,6 +123,28 @@ const EVALUATORS = {
     return { status: m.state === "pass" ? "pass" : "fail", detail };
   },
 
+  // Tickets and handoffs that wait on other work: backend before frontend, merge before QA, designs before tickets.
+  dependencies_clear(params, snapshot) {
+    const r = need(snapshot, "deps");
+    if (r.error) return unavailable("dependencies", r.error);
+    const d = r.value;
+    if (!d.any) return { status: "pass", detail: "No dependencies entered." };
+    const names = (arr, n = 3) => arr.slice(0, n).map((x) => x.key || x.what).join(", ") + (arr.length > n ? "…" : "");
+    const problems = [];
+    let status = "pass";
+    const raise = (s) => { if (SEVERITY[s] > SEVERITY[status]) status = s; };
+    if (d.cycles.length) { problems.push(`circular: ${d.cycles[0].join(" → ")} → ${d.cycles[0][0]}, so none of them can start`); raise("fail"); }
+    const begun = d.startedEarly.filter((x) => x.status !== "Done").length; // waiting, yet already being worked on
+    const doneEarly = d.startedEarly.filter((x) => x.status === "Done");
+    if (d.waiting.length) { problems.push(`${plural(d.waiting.length, "ticket is", "tickets are")} waiting on other work (${names(d.waiting)})${begun ? `, ${begun === d.waiting.length ? "all" : begun} already started` : ""}`); raise(params.waitingAs || "warn"); }
+    if (doneEarly.length) { problems.push(`${plural(doneEarly.length, "ticket is", "tickets are")} marked Done while what they depend on is not (${names(doneEarly)})`); raise("warn"); }
+    if (d.handoffs.overdue.length) { problems.push(`${plural(d.handoffs.overdue.length, "handoff is", "handoffs are")} overdue (${names(d.handoffs.overdue)})`); raise("warn"); }
+    if (d.handoffs.blocked.length) { problems.push(`${plural(d.handoffs.blocked.length, "handoff is", "handoffs are")} blocked (${names(d.handoffs.blocked)})`); raise("warn"); }
+    if (d.outside.length) { problems.push(`waiting on ${d.outside.slice(0, 3).join(", ")}, which ${d.outside.length === 1 ? "is" : "are"} not in this release's ticket list`); raise("warn"); }
+    if (!problems.length) return { status: "pass", detail: "Every dependency is done." };
+    return { status, detail: problems.join("; ").replace(/^./, (c) => c.toUpperCase()) + "." };
+  },
+
   // Story points done against the target share, from Jira or the planning form.
   points_complete(params, snapshot) {
     const r = need(snapshot, "points");
