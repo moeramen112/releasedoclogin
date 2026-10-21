@@ -1,0 +1,26 @@
+# Render Blueprint: click "New > Blueprint" and point it at this repository.
+services:
+  - type: web
+    name: release-readiness
+    runtime: docker
+    plan: starter            # a disk needs a paid plan; the free plan forgets everything on restart
+    healthCheckPath: /api/health
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: ADMIN_EMAIL
+        sync: false          # you type this in the Render page
+      - key: PUBLIC_URL
+        sync: false          # your site address, for example https://release-readiness.onrender.com
+      - key: JIRA_BASE_URL
+        sync: false
+      - key: JIRA_EMAIL
+        sync: false
+      - key: JIRA_API_TOKEN
+        sync: false
+      - key: SLACK_WEBHOOK_URL
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false

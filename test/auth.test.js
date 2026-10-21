@@ -218,3 +218,25 @@ test("cookies are HttpOnly and SameSite=Strict, and Secure behind https", async 
   assert.match(r2.headers.get("set-cookie"), /Secure/);
   s.server.close();
 });
+
+test("RESEND_ADMIN_LINK gives a new first-admin link only until the password is set", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "rr-r-"));
+  const env = { ADMIN_EMAIL: "boss@example.com" };
+  const a1 = await createApp({ stateDir: dir, env });
+  const first = await a1.auth.bootstrap();
+  assert.ok(first.token);
+  const a2 = await createApp({ stateDir: dir, env });
+  assert.equal(await a2.auth.bootstrap(), null, "no resend unless asked");
+  const a3 = await createApp({ stateDir: dir, env: { ...env, RESEND_ADMIN_LINK: "1" } });
+  const again = await a3.auth.bootstrap();
+  assert.ok(again.token && again.token !== first.token);
+  await a3.auth.accept({ email: "boss@example.com", token: again.token, password: "a-long-enough-password-1" });
+  const a4 = await createApp({ stateDir: dir, env: { ...env, RESEND_ADMIN_LINK: "1" } });
+  assert.equal(await a4.auth.bootstrap(), null, "after setup, the flag does nothing");
+});
+
+test("health check is open and says nothing private", async () => {
+  const res = await fetch(base + "/api/health");
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ok: true });
+});

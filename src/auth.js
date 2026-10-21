@@ -184,7 +184,12 @@ export async function createAuth({ dir, env = process.env, now = Date.now } = {}
 
   /** First start: create the first admin from ADMIN_EMAIL and return a one-time link. */
   async function bootstrap() {
-    if (Object.keys(users()).length) return null;
+    if (Object.keys(users()).length) {
+      // Missed the first link? Set RESEND_ADMIN_LINK=1 and restart. Only works while ADMIN_EMAIL has not set a password yet.
+      const u = users()[normEmail(env.ADMIN_EMAIL)];
+      if (env.RESEND_ADMIN_LINK === "1" && u && !u.hash) { const { token } = await admin.reinvite(u.email, "setup"); return { email: u.email, token }; }
+      return null;
+    }
     const email = normEmail(env.ADMIN_EMAIL);
     if (!EMAIL_RE.test(email)) return { missing: true };
     const { token } = await admin.invite({ email, name: "", role: "admin" }, "setup");

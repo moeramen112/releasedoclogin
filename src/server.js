@@ -21,7 +21,7 @@ const CACHE_MS = 60_000;
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 const REF_RE = /^[\w./@+-]{1,200}$/;
 const RELEASE_RE = /^\/api\/releases\/([a-z0-9-]{3,64})$/;
-const PUBLIC_API = new Set(["GET /api/auth/status", "POST /api/auth/login", "POST /api/auth/accept"]);
+const PUBLIC_API = new Set(["GET /api/health", "GET /api/auth/status", "POST /api/auth/login", "POST /api/auth/accept"]);
 const PUBLIC_FILES = new Set(["/login.html", "/invite.html", "/login.js", "/styles.css"]);
 // Who may call what. Anything not listed needs only a signed-in user (viewer).
 const NEEDS = { "POST /api/waive": "editor", "POST /api/unwaive": "editor", "POST /api/manual": "editor", "POST /api/notify": "editor", "GET /api/jira/issues": "editor", "GET /api/admin/users": "admin", "POST /api/admin/users": "admin", "POST /api/admin/users/reinvite": "admin", "POST /api/admin/users/update": "admin" };
@@ -257,6 +257,9 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
       const rels = Object.values(relDb.get().releases).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       return { me: user, authEnabled: Boolean(auth), releases: rels };
     },
+
+    // For the host to check the server is alive. Says nothing about your data.
+    "GET /api/health": async () => ({ ok: true }),
 
     // When each release was last refreshed from Jira, and the last go/no-go call seen. Any signed-in person can read it.
     "GET /api/sync": async () => jobs.status(),

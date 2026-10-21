@@ -246,3 +246,7 @@ In the planner, the **Release brief** panel has:
 - **Printable page**: open it, press Print, choose Save as PDF.
 - **Status one-pager**: just the call, dates and risks, for leadership.
 - **.md** and **Copy Markdown**: plain text.
+
+## Putting it online
+
+See `HOSTING.md` for step-by-step setup on Render (a `Dockerfile` and `render.yaml` are included, so Railway and Fly.io work too). If you miss the first admin link, set `RESEND_ADMIN_LINK=1` and restart to get a new one.
