@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Schibsted+Grotesk:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="auth-card panel">
+    <h1>Release readiness</h1>
+    <p class="msg" id="intro">Sign in to continue.</p>
+    <div class="banner bad" id="err" role="alert" hidden></div>
+    <div class="banner" id="notice" hidden></div>
+    <form id="login" class="auth-form" autocomplete="on">
+      <div class="field"><label for="email">Email</label><input id="email" name="email" type="email" required autocomplete="username" autofocus></div>
+      <div class="field"><label for="password">Password</label><input id="password" name="password" type="password" required autocomplete="current-password"></div>
+      <button class="btn primary" type="submit" id="go">Sign in</button>
+    </form>
+    <p class="msg">This tool is invite only. Ask an admin if you need access.</p>
+  </main>
+  <script src="/login.js"></script>
+</body>
+</html>

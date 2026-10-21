@@ -1,0 +1,15 @@
+{
+  "name": "release-readiness-login",
+  "version": "0.1.0",
+  "description": "Release readiness and planning for a team: invite-only sign-in, roles, and releases saved on the server.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "try": "node src/server.js --demo --no-auth",
+    "test": "node --test"
+  }
+}

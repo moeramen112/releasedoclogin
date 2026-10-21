@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Release Planner</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Schibsted+Grotesk:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <div class="title">
+        <h1>Release planner</h1>
+        <div class="sub mono">Enter the release. The risk analysis, go/no-go call, runbook and brief update as you type.</div>
+      </div>
+      <nav class="nav" aria-label="Pages">
+        <a href="/">Dashboard</a>
+        <a href="/plan.html" aria-current="page">Planner</a>
+      </nav>
+    </header>
+
+    <section class="panel relbar" aria-label="Releases">
+      <label class="relpick" for="rel-select">Release<select id="rel-select"></select></label>
+      <div class="toolbar">
+        <button class="btn small primary" type="button" data-act="rel-new" title="Start an empty release">New release</button>
+        <button class="btn small" type="button" data-act="rel-next" title="Keeps people, repository, environments and rollout settings. Clears tickets, signals and approvals.">Start next release</button>
+        <button class="btn small" type="button" data-act="rel-dup">Duplicate</button>
+        <button class="btn small" type="button" data-act="rel-delete">Delete</button>
+        <button class="btn small" type="button" data-act="rel-example">Load example</button>
+        <button class="btn small" type="button" data-act="import">Import</button>
+      </div>
+      <span class="msg" id="rel-msg" role="status"></span>
+      <span class="msg save-state" id="save-state" aria-live="polite"></span>
+    </section>
+
+    <div class="sumbar" id="sumbar" aria-live="polite"></div>
+
+    <div class="plan">
+      <div class="col" id="inputs"></div>
+      <div class="col results" id="results" aria-label="Results"></div>
+    </div>
+  </div>
+  <input type="file" id="import-file" accept="application/json,.json" hidden>
+  <script type="module" src="/plan-ui.js"></script>
+  <script src="/session.js"></script>
+</body>
+</html>

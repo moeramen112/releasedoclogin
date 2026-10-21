@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Accept invite</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Schibsted+Grotesk:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="auth-card panel">
+    <h1>Set your password</h1>
+    <p class="msg" id="intro">Choose a password to finish setting up your account. Use at least 10 characters.</p>
+    <div class="banner bad" id="err" role="alert" hidden></div>
+    <form id="accept" class="auth-form" autocomplete="on">
+      <div class="field"><label for="email">Email</label><input id="email" name="email" type="email" readonly autocomplete="username"></div>
+      <div class="field"><label for="name">Your name</label><input id="name" name="name" type="text" maxlength="80" required autocomplete="name" placeholder="Shown on sign-offs and waivers"></div>
+      <div class="field"><label for="password">New password</label><input id="password" name="password" type="password" minlength="10" required autocomplete="new-password"></div>
+      <div class="field"><label for="again">Type it again</label><input id="again" name="again" type="password" minlength="10" required autocomplete="new-password"></div>
+      <button class="btn primary" type="submit" id="go">Create account</button>
+    </form>
+  </main>
+  <script src="/login.js"></script>
+</body>
+</html>

@@ -1,0 +1,56 @@
+{
+  "release": {
+    "name": "Release 4.12",
+    "repo": "acme/web",
+    "baseRef": "v4.11.0",
+    "headRef": "release/4.12",
+    "tag": "v4.12.0",
+    "jiraVersion": "4.12",
+    "freezeDate": "2026-10-15T00:00:00Z",
+    "goNoGoMeeting": "2026-10-21T18:00:00Z",
+    "deployTarget": "2026-10-22T06:00:00Z"
+  },
+
+  "labels": {
+    "blocker": ["release-blocker"],
+    "p0": ["P0", "priority: critical", "severity: critical"],
+    "p1": ["P1", "priority: high", "severity: high"],
+    "p2": ["P2", "priority: medium"],
+    "defaultBlockerSeverity": "P1"
+  },
+
+  "issues": { "milestone": null },
+
+  "jira": {
+    "jql": "fixVersion = \"{{version}}\" AND resolution = Unresolved AND priority in (Highest, High)",
+    "priorityMap": {},
+    "storyPointsField": "customfield_10016"
+  },
+
+  "ci": { "quarantine": ["quarantine", "flaky"] },
+
+  "signoffs": {
+    "issue": null,
+    "roles": [
+      { "role": "QA", "label": "signoff: qa" },
+      { "role": "Product", "label": "signoff: product" },
+      { "role": "Security", "label": "signoff: security" },
+      { "role": "SRE on-call", "label": "signoff: sre" }
+    ]
+  },
+
+  "criteria": [
+    { "id": "p0", "name": "No open P0 defects", "type": "blockers_none", "required": true, "params": { "severity": "P0" } },
+    { "id": "p1", "name": "No open P1 defects", "type": "blockers_none", "required": true, "params": { "severity": "P1", "failAs": "warn" } },
+    { "id": "ci", "name": "Release branch checks green", "type": "ci_green", "required": true },
+    { "id": "migration", "name": "Migration dry run on production-size data", "type": "manual", "source": "manual", "required": true, "params": { "checkId": "migration" } },
+    { "id": "prs", "name": "All scoped PRs merged", "type": "open_prs", "required": true, "params": { "failAs": "warn" } },
+    { "id": "signoffs", "name": "Sign-offs collected", "type": "signoffs", "required": true },
+    { "id": "rollback", "name": "Rollback rehearsed", "type": "manual", "source": "manual", "required": true, "params": { "checkId": "rollback" } },
+    { "id": "reviews", "name": "Every merged PR had an approval", "type": "review_coverage", "required": false, "params": { "max": 0, "failAs": "warn" } },
+    { "id": "late", "name": "Nothing merged after the freeze", "type": "late_changes", "required": false, "params": { "max": 0 } },
+    { "id": "size", "name": "Release size within budget", "type": "change_size", "required": false, "params": { "maxFiles": 400, "maxLines": 15000 } },
+    { "id": "notes", "name": "Release notes drafted", "type": "draft_release", "required": false },
+    { "id": "errorbudget", "name": "Error budget above floor", "type": "manual", "source": "manual", "required": false, "params": { "checkId": "errorbudget" } }
+  ]
+}

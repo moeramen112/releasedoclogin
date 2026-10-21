@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Release Readiness</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Schibsted+Grotesk:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <div class="title">
+        <h1 id="relname">Release readiness</h1>
+        <div class="sub mono" id="relsub">Loading…</div>
+      </div>
+      <div class="meta" id="meta"></div>
+      <nav class="nav" aria-label="Pages">
+        <a href="/" aria-current="page">Dashboard</a>
+        <a href="/plan.html">Planner</a>
+      </nav>
+    </header>
+
+    <form class="controls panel" id="controls" aria-label="Release and data source">
+      <div class="seg" role="group" aria-label="Data source">
+        <button type="button" data-mode="live" id="mode-live">Live data</button>
+        <button type="button" data-mode="demo" id="mode-demo">Demo data</button>
+      </div>
+      <label>Repository<input id="f-repo" class="mono" placeholder="owner/name" autocomplete="off"></label>
+      <label>Compare from<input id="f-base" class="mono" placeholder="v4.11.0" autocomplete="off"></label>
+      <label>Release branch<input id="f-head" class="mono" placeholder="release/4.12" autocomplete="off"></label>
+      <label>Your name<input id="f-who" placeholder="Used in the audit log" autocomplete="name"></label>
+      <div class="actions">
+        <button type="submit" class="btn primary" id="b-load">Load</button>
+        <button type="button" class="btn" id="b-refresh">Refresh</button>
+        <button type="button" class="btn" id="b-slack">Post to Slack</button>
+      </div>
+    </form>
+
+    <div id="banner" role="status"></div>
+    <section class="verdict" aria-label="Go/no-go verdict" id="verdict"></section>
+
+    <section class="panel" aria-labelledby="crit-h">
+      <div class="panel-head">
+        <h2 id="crit-h">Go/no-go criteria</h2>
+        <span class="note">A waiver records accepted risk. It needs a named approver and a reason, and it expires if the criterion gets worse.</span>
+      </div>
+      <div class="criteria" id="criteria"></div>
+    </section>
+
+    <div class="grid2">
+      <section class="panel" aria-labelledby="bl-h">
+        <div class="panel-head">
+          <h2 id="bl-h">Open release blockers</h2>
+          <div class="filters" id="filters" role="group" aria-label="Filter by severity"></div>
+        </div>
+        <div class="tablewrap"><table id="blockers"></table></div>
+      </section>
+      <section class="panel" aria-labelledby="so-h">
+        <h2 id="so-h">Sign-offs</h2>
+        <div class="appr" id="signoffs"></div>
+      </section>
+    </div>
+
+    <div class="grid2">
+      <section class="panel" aria-labelledby="g-h">
+        <h2 id="g-h">Release branch quality gates</h2>
+        <div id="gates"></div>
+      </section>
+      <section class="panel" aria-labelledby="tr-h">
+        <div class="panel-head"><h2 id="tr-h">Open blockers over time</h2><span class="note" id="trnote"></span></div>
+        <div id="trend"></div>
+      </section>
+    </div>
+
+    <section class="panel" aria-labelledby="pr-h">
+      <div class="panel-head"><h2 id="pr-h">Scoped pull requests not yet merged</h2><span class="note mono" id="prnote"></span></div>
+      <div class="tablewrap"><table id="prs"></table></div>
+    </section>
+
+    <section class="panel" aria-labelledby="au-h">
+      <h2 id="au-h">Audit log</h2>
+      <div class="tablewrap"><table id="audit"></table></div>
+    </section>
+  </div>
+  <script src="/app.js"></script>
+  <script src="/session.js"></script>
+</body>
+</html>

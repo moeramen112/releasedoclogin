@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Your account</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Schibsted+Grotesk:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <div class="title"><h1>Your account</h1><div class="sub mono" id="who">Loading…</div></div>
+      <nav class="nav" aria-label="Pages"><a href="/">Dashboard</a><a href="/plan.html">Planner</a></nav>
+    </header>
+    <section class="panel auth-wide">
+      <h2>Change password</h2>
+      <p class="msg">Changing it signs you out everywhere else. Use at least 10 characters.</p>
+      <div class="banner bad" id="err" role="alert" hidden></div>
+      <div class="banner good" id="ok" hidden></div>
+      <form id="pw" class="auth-form">
+        <div class="field"><label for="current">Current password</label><input id="current" type="password" required autocomplete="current-password"></div>
+        <div class="field"><label for="next">New password</label><input id="next" type="password" minlength="10" required autocomplete="new-password"></div>
+        <div class="field"><label for="again">Type it again</label><input id="again" type="password" minlength="10" required autocomplete="new-password"></div>
+        <button class="btn primary" type="submit">Change password</button>
+      </form>
+    </section>
+  </div>
+  <script src="/session.js"></script>
+  <script src="/account.js"></script>
+</body>
+</html>

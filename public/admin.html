@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>People</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Schibsted+Grotesk:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <div class="title"><h1>People</h1><div class="sub mono">Who can open this tool, and what they can do.</div></div>
+      <nav class="nav" aria-label="Pages"><a href="/">Dashboard</a><a href="/plan.html">Planner</a></nav>
+    </header>
+    <section class="panel">
+      <h2>Invite someone</h2>
+      <p class="msg"><strong>Viewer</strong> can read everything. <strong>Editor</strong> can also change releases, sign off and waive. <strong>Admin</strong> can also manage people.</p>
+      <div class="banner bad" id="err" role="alert" hidden></div>
+      <form id="invite" class="invite-row">
+        <div class="field"><label for="i-email">Email</label><input id="i-email" type="email" required></div>
+        <div class="field"><label for="i-name">Name (optional)</label><input id="i-name" type="text" maxlength="80"></div>
+        <div class="field"><label for="i-role">Role</label><select id="i-role"><option value="viewer">Viewer</option><option value="editor" selected>Editor</option><option value="admin">Admin</option></select></div>
+        <button class="btn primary" type="submit">Create invite</button>
+      </form>
+      <div class="banner good" id="link-box" hidden>
+        <strong id="link-title">Send this link to them.</strong>
+        <input id="link" type="text" readonly class="mono" aria-label="Invite link">
+        <span class="msg">It works once and expires in 7 days. It is shown only now, so copy it before you leave this page.</span>
+        <button class="btn small" type="button" id="copy">Copy link</button>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Everyone</h2>
+      <div class="tablewrap"><table class="tbl" id="users" style="min-width:640px"></table></div>
+    </section>
+  </div>
+  <script src="/session.js"></script>
+  <script src="/admin.js"></script>
+</body>
+</html>
