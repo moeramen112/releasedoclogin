@@ -240,3 +240,15 @@ test("health check is open and says nothing private", async () => {
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { ok: true });
 });
+
+test("AI helpers: signed-in editors only; viewers and visitors are refused", async () => {
+  const viewer = await join("viewer", "ai-view@example.com");
+  const editor = await join("editor", "ai-edit@example.com");
+  const { defaultPlan } = await import("../src/plan.js");
+  const body = { plan: defaultPlan(Date.now()) };
+  assert.equal((await call("POST", "/api/ai/briefing", body)).status, 401);
+  assert.equal((await call("POST", "/api/ai/briefing", body, viewer)).status, 403);
+  assert.equal((await call("POST", "/api/ai/risks", body, viewer)).status, 403);
+  assert.equal((await call("POST", "/api/ai/dependencies", body, viewer)).status, 403);
+  assert.equal((await call("POST", "/api/ai/briefing", body, editor)).status, 200);
+});

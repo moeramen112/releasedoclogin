@@ -12,6 +12,7 @@ import { createAuth, roleAllows } from "./auth.js";
 import { DEMO_SEED } from "./sources/fixture.js";
 import { jiraConfigured, fetchJiraRelease } from "./sources/jira.js";
 import { createJobs } from "./jobs.js";
+import { createAi } from "./ai.js";
 import { buildSlackMessage, sendSlack } from "./notify.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -24,7 +25,7 @@ const RELEASE_RE = /^\/api\/releases\/([a-z0-9-]{3,64})$/;
 const PUBLIC_API = new Set(["GET /api/health", "GET /api/auth/status", "POST /api/auth/login", "POST /api/auth/accept"]);
 const PUBLIC_FILES = new Set(["/login.html", "/invite.html", "/login.js", "/styles.css"]);
 // Who may call what. Anything not listed needs only a signed-in user (viewer).
-const NEEDS = { "POST /api/waive": "editor", "POST /api/unwaive": "editor", "POST /api/manual": "editor", "POST /api/notify": "editor", "GET /api/jira/issues": "editor", "GET /api/admin/users": "admin", "POST /api/admin/users": "admin", "POST /api/admin/users/reinvite": "admin", "POST /api/admin/users/update": "admin" };
+const NEEDS = { "POST /api/waive": "editor", "POST /api/unwaive": "editor", "POST /api/manual": "editor", "POST /api/notify": "editor", "POST /api/ai/briefing": "editor", "POST /api/ai/risks": "editor", "POST /api/ai/dependencies": "editor", "GET /api/jira/issues": "editor", "GET /api/admin/users": "admin", "POST /api/admin/users": "admin", "POST /api/admin/users/reinvite": "admin", "POST /api/admin/users/update": "admin" };
 const SECURITY_HEADERS = { "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY" };
 const LOCAL_USER = { email: "local", name: "Local user", role: "admin" };
 const MAX_RELEASES = 500;
@@ -43,6 +44,15 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
   const relDb = await createJsonStore(path.join(stateDir, "releases.json"), () => ({ releases: {}, audit: [] }));
   const jobsDb = await createJsonStore(path.join(stateDir, "jobs.json"), () => ({ releases: {} }));
   const jobs = createJobs({ relDb, jobsDb, config, env, deps, log: (m) => console.error(m) });
+  const ai = deps.ai || createAi({ env, fetchImpl: deps.fetchAnthropic || fetch });
+  const aiUse = new Map(); // person -> times used in the last hour, so a loop cannot run up a bill
+  const AI_PER_HOUR = Math.max(1, Number(env.AI_PER_HOUR) || 30);
+  const aiLimit = (user) => {
+    const k = user.email || "local", now = Date.now();
+    const recent = (aiUse.get(k) || []).filter((t) => now - t < 3_600_000);
+    if (recent.length >= AI_PER_HOUR) throw new HttpError(429, `You have used the AI helper ${AI_PER_HOUR} times in the last hour. Try again later.`);
+    recent.push(now); aiUse.set(k, recent);
+  };
   const stores = {};
   // Waivers, manual checks and the audit log belong to one release, so each repo and release branch gets its own file.
   const storeKey = ({ mode, release }) => (mode === "demo" ? "demo" : `live.${release.repo}@${release.headRef}`.toLowerCase().replace(/\//g, "__").replace(/[^a-z0-9@._-]+/g, "-"));
@@ -92,7 +102,7 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
       result,
       history: state.history.filter((h) => h.key === key).slice(-60),
       audit: state.audit.slice(-25).reverse(),
-      integrations: { github: Boolean(env.GITHUB_TOKEN), jira: jiraConfigured(env), slack: Boolean(env.SLACK_WEBHOOK_URL) },
+      integrations: { github: Boolean(env.GITHUB_TOKEN), jira: jiraConfigured(env), slack: Boolean(env.SLACK_WEBHOOK_URL), ai: ai.mode },
     };
   }
 
@@ -131,7 +141,7 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
       release: config.release,
       defaultMode,
       criteria: config.criteria.map(({ id, name, type, source, required, params }) => ({ id, name, type, source: source || "github", required: required !== false, checkId: type === "manual" ? params.checkId : undefined })),
-      integrations: { github: Boolean(env.GITHUB_TOKEN), jira: jiraConfigured(env), slack: Boolean(env.SLACK_WEBHOOK_URL) },
+      integrations: { github: Boolean(env.GITHUB_TOKEN), jira: jiraConfigured(env), slack: Boolean(env.SLACK_WEBHOOK_URL), ai: ai.mode },
     }),
 
     "GET /api/readiness": async (req, url) => payload(target(url.searchParams), url.searchParams.get("refresh") === "1"),
@@ -256,6 +266,26 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
     "GET /api/releases": async (req, url, user) => {
       const rels = Object.values(relDb.get().releases).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       return { me: user, authEnabled: Boolean(auth), releases: rels };
+    },
+
+    // AI helpers. They only suggest; the person approves in the planner. The plan comes from the page, so nothing here is saved.
+    "POST /api/ai/briefing": async (req, url, user) => {
+      guard(req); aiLimit(user);
+      const body = await readBody(req, PLAN_BYTES);
+      if (!validPlan(body.plan)) throw new HttpError(400, "That is not a release plan.");
+      try { return await ai.briefing(body.plan, body.audience); } catch (e) { throw new HttpError(e.status || 502, e.message); }
+    },
+    "POST /api/ai/risks": async (req, url, user) => {
+      guard(req); aiLimit(user);
+      const body = await readBody(req, PLAN_BYTES);
+      if (!validPlan(body.plan)) throw new HttpError(400, "That is not a release plan.");
+      try { return await ai.risks(body.plan); } catch (e) { throw new HttpError(e.status || 502, e.message); }
+    },
+    "POST /api/ai/dependencies": async (req, url, user) => {
+      guard(req); aiLimit(user);
+      const body = await readBody(req, PLAN_BYTES);
+      if (!validPlan(body.plan)) throw new HttpError(400, "That is not a release plan.");
+      try { return await ai.dependencies(body.plan); } catch (e) { throw new HttpError(e.status || 502, e.message); }
     },
 
     // For the host to check the server is alive. Says nothing about your data.

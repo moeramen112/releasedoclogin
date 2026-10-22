@@ -299,6 +299,11 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
 .ro [data-act="waive"], .ro [data-act="unwaive"], .ro [data-act="close-waive"] { display: none; }
 .autochk { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted, #667085); }
 #sync-state { display: block; margin-top: 4px; }
+.ai-list { display: flex; flex-direction: column; gap: 8px; }
+.ai-item { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--surface-2); }
+.ai-item > div:first-child { flex: 1 1 220px; min-width: 0; }
+.ai-brief .panel-head h3 { font-size: 13px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+#ai-audience { font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); }
 
 </style>
 <div class="wrap">
@@ -2198,6 +2203,80 @@ function renderCriteria({ result }) {
   return `<section class="panel"><div class="panel-head"><h2>Go/no-go criteria</h2><span class="note">A waiver needs a named approver and a reason.</span></div><div>${rows}</div></section>`;
 }
 
+
+/* ---------- AI helpers: they suggest, a person approves ---------- */
+
+const AI = { busy: "", audience: "leadership", briefing: null, kind: "", sugg: [], error: "", note: "" };
+
+const aiLabel = (s) => ({
+  tag: `${s.key}: mark as a migration`,
+  area: `${s.key}: change area to ${s.value}`,
+  team: `${s.key}: set team to ${s.value}`,
+  blockedBy: `${s.key} waits on ${s.value}`,
+  handoff: `New handoff: ${s.value?.from} to ${s.value?.to}${s.value?.blocks ? ` (blocks ${s.value.blocks})` : ""}`,
+}[s.kind] || "Suggestion");
+
+function renderAi() {
+  if (!integrations.server || !integrations.ai || READONLY) return "";
+  const live = integrations.ai === "live";
+  const off = readOnly() || AI.busy;
+  const btn = (act, label, tip) => `<button class="btn small" type="button" data-act="${act}" title="${esc(tip)}"${off ? " disabled" : ""}>${label}</button>`;
+  const chips = { high: "s-pass", medium: "s-warn", low: "s-pending" };
+  const list = AI.sugg.length
+    ? `<div class="ai-list">${AI.sugg.map((s) => `<div class="ai-item"><div><strong>${esc(aiLabel(s))}</strong> <span class="chip ${chips[s.confidence] || "s-pending"}">${esc(s.confidence)}</span><div class="note">${esc(s.why)}</div></div><div class="row-actions"><button class="btn small primary" type="button" data-act="ai-accept" data-id="${esc(s.id)}">Apply</button><button class="btn small" type="button" data-act="ai-dismiss" data-id="${esc(s.id)}">Dismiss</button></div></div>`).join("")}${AI.sugg.length > 1 ? `<div class="row-actions"><button class="btn small" type="button" data-act="ai-accept-all">Apply all</button><button class="btn small" type="button" data-act="ai-dismiss-all">Dismiss all</button></div>` : ""}</div>`
+    : AI.kind ? `<p class="note">${AI.kind === "risks" ? "Nothing new spotted." : "Nothing new suggested."}</p>` : "";
+  const brief = AI.briefing ? `<div class="ai-brief"><div class="panel-head"><h3>${AI.briefing.audience === "leadership" ? "Leadership update" : "Team update"} <span class="chip s-waived">${live ? "AI draft: check before sending" : "Rules-based draft"}</span></h3><button class="btn small" type="button" data-act="ai-copy">Copy</button></div><pre class="brief" id="ai-brief-text">${esc(AI.briefing.text)}</pre></div>` : "";
+  return `<section class="panel"><div class="panel-head"><h2>AI helpers</h2><span class="note">${live ? "Claude reads this release and suggests. You approve." : "Demo mode: simple rules, no AI key set. Same screens, smarter once a key is added."}</span></div>
+    <div class="row-actions"><select id="ai-audience" aria-label="Who is the update for"${off ? " disabled" : ""}><option value="leadership"${AI.audience === "leadership" ? " selected" : ""}>For leadership</option><option value="engineering"${AI.audience === "engineering" ? " selected" : ""}>For the team</option></select>
+    ${btn("ai-briefing", "Write status update", "A short update in plain words")}${btn("ai-risks", "Spot risks", "Finds migrations and sensitive work that are not marked")}${btn("ai-deps", "Find dependencies", "Finds work that probably waits on other work")}<span class="msg ${AI.error ? "bad" : ""}" id="ai-msg">${esc(AI.busy ? "Working…" : AI.error || AI.note)}</span></div>
+    ${brief}${list}</section>`;
+}
+
+async function aiCall(kind) {
+  const path = { briefing: "briefing", risks: "risks", deps: "dependencies" }[kind];
+  AI.busy = kind; AI.error = ""; AI.note = ""; renderResults();
+  try {
+    const res = await fetch("/api/ai/" + path, { method: "POST", headers: RH, body: JSON.stringify({ plan: P, audience: AI.audience }) });
+    if (res.status === 401) { toLogin(); return; }
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || `Request failed (${res.status}).`);
+    if (kind === "briefing") AI.briefing = body;
+    else { AI.kind = kind; AI.sugg = [...AI.sugg.filter((s) => (kind === "risks" ? ["blockedBy", "team", "handoff"] : ["tag", "area"]).includes(s.kind)), ...body.suggestions].map((s, i) => ({ ...s, id: String(i + 1) })); AI.note = body.suggestions.length ? "" : "Nothing new found."; }
+  } catch (e) {
+    AI.error = e.message;
+  }
+  AI.busy = "";
+  renderResults();
+}
+
+/** Apply one approved suggestion to the plan. Returns true if something changed. */
+function aiApply(s) {
+  if (s.kind === "handoff") {
+    (P.handoffs ||= []).push({ what: s.value.what, from: s.value.from, to: s.value.to, owner: "", due: P.when.freezeAt || "", status: s.value.status || "Not started", blocks: s.value.blocks || "" });
+    return true;
+  }
+  const t = P.tickets.find((x) => String(x.key).toUpperCase() === String(s.key).toUpperCase());
+  if (!t) return false;
+  if (s.kind === "tag") { t.tags = { ...(t.tags || {}), migration: true }; return true; }
+  if (s.kind === "area") { t.area = s.value; return true; }
+  if (s.kind === "team") { t.team = s.value; return true; }
+  if (s.kind === "blockedBy") {
+    const have = parseKeys(t.blockedBy);
+    if (have.includes(String(s.value).toUpperCase())) return false;
+    t.blockedBy = [...have, s.value].join(", ");
+    return true;
+  }
+  return false;
+}
+
+function aiResolve(ids, apply) {
+  let n = 0;
+  for (const s of AI.sugg.filter((x) => ids.includes(x.id))) if (apply && aiApply(s)) n++;
+  AI.sugg = AI.sugg.filter((x) => !ids.includes(x.id));
+  AI.note = apply ? `Applied ${n}. Check the tickets and handoffs on the left.` : "";
+  if (apply) { renderTickets(); renderHandoffs(); changed(); } else renderResults();
+}
+
 function renderBrief({ brief }) {
   return `<section class="panel"><div class="panel-head"><h2>Release brief</h2><div class="row-actions"><button class="btn small" type="button" data-act="copy-doc" title="Paste into Google Docs, Word, Confluence or Notion with formatting kept">Copy for Docs</button><button class="btn small" type="button" data-act="copy-brief">Copy Markdown</button>${STANDALONE ? "" : `<button class="btn small" type="button" data-act="download-word">Word (.doc)</button><button class="btn small" type="button" data-act="download-doc" title="Open it, then Print and Save as PDF">Printable page</button><button class="btn small" type="button" data-act="download-status" title="One page for leadership">Status one-pager</button><button class="btn small" type="button" data-act="download-brief">.md</button>`}<span class="msg" id="brief-msg"></span></div></div><pre class="brief" id="brief">${esc(brief)}</pre></section>`;
 }
@@ -2215,7 +2294,7 @@ function renderResults() {
   const roNote = READONLY ? `<div class="banner"><strong>View only.</strong><span>This is an example release with invented names and numbers. You can look at everything, but nothing can be changed or saved.</span></div>` : "";
   const note = roNote + (fresh ? `<div class="banner"><strong>New release.</strong><span>Name it and set the dates on the left, then add tickets or pull them from Jira. The call stays HOLD until the checks have data, and anything unknown counts as risk.</span></div>` : "");
   renderRelSelect();
-  $("#results").innerHTML = note + renderVerdict(last) + renderRisk(last) + renderPoints(last) + renderDeps(last) + renderCriteria(last) + renderBrief(last);
+  $("#results").innerHTML = note + renderVerdict(last) + renderRisk(last) + renderPoints(last) + renderDeps(last) + renderCriteria(last) + renderAi() + renderBrief(last);
   const p = last.risk.points;
   const sum = $("#tk-sum");
   if (sum) sum.textContent = `${p.tickets} tickets · ${p.total} points · ${p.done} done`;
@@ -2329,6 +2408,8 @@ async function pullJira() {
   }
 }
 
+document.addEventListener("change", (e) => { if (e.target.id === "ai-audience") AI.audience = e.target.value; });
+
 document.addEventListener("click", async (e) => {
   const a = e.target.closest("[data-act]");
   if (!a) return;
@@ -2378,6 +2459,17 @@ document.addEventListener("click", async (e) => {
   }
   else if (act === "pull-jira") pullJira();
   else if (act === "refresh-jira") refreshJira();
+  else if (act === "ai-briefing") aiCall("briefing");
+  else if (act === "ai-risks") aiCall("risks");
+  else if (act === "ai-deps") aiCall("deps");
+  else if (act === "ai-accept") aiResolve([a.dataset.id], true);
+  else if (act === "ai-dismiss") aiResolve([a.dataset.id], false);
+  else if (act === "ai-accept-all") aiResolve(AI.sugg.map((x) => x.id), true);
+  else if (act === "ai-dismiss-all") aiResolve(AI.sugg.map((x) => x.id), false);
+  else if (act === "ai-copy") {
+    try { await navigator.clipboard.writeText(AI.briefing.text); AI.note = "Copied."; } catch { AI.note = "Copy was blocked. Select the text and press Ctrl+C."; }
+    renderResults();
+  }
   else if (act === "waive") { openWaive = a.dataset.id; waiveError = ""; renderResults(); }
   else if (act === "close-waive") { openWaive = null; waiveError = ""; renderResults(); }
   else if (act === "unwaive") { delete P.waivers[a.dataset.id]; changed(); }
@@ -2530,7 +2622,7 @@ $("#import-file").addEventListener("change", async (e) => {
   }
   try {
     const res = await fetch("/api/config");
-    if (res.ok) { const cfg = await res.json(); integrations = { jira: Boolean(cfg.integrations?.jira), server: true }; updateJiraButton(); }
+    if (res.ok) { const cfg = await res.json(); integrations = { jira: Boolean(cfg.integrations?.jira), server: true, ai: cfg.integrations?.ai || "" }; updateJiraButton(); renderResults(); }
   } catch { /* no server, planner still works on its own */ }
 })();
 

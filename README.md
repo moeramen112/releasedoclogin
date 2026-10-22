@@ -250,3 +250,20 @@ In the planner, the **Release brief** panel has:
 ## Putting it online
 
 See `HOSTING.md` for step-by-step setup on Render (a `Dockerfile` and `render.yaml` are included, so Railway and Fly.io work too). If you miss the first admin link, set `RESEND_ADMIN_LINK=1` and restart to get a new one.
+
+## AI helpers
+
+Three buttons in the planner, in the **AI helpers** panel:
+
+- **Write status update**: a short update in plain words, for leadership or for the team.
+- **Spot risks**: finds tickets that mention a database change or payments, sign-in or personal data but are not marked that way.
+- **Find dependencies**: finds work that probably waits on other work (frontend on backend, QA on the merge), suggests teams, and suggests handoffs.
+
+How it behaves:
+
+- **It only suggests.** Every suggestion has a reason and a confidence, and nothing changes until you press **Apply**. The GO / HOLD / NO-GO call always comes from the rules, never from the AI.
+- **Demo mode (default).** With no key it uses simple rules. It costs nothing and sends nothing anywhere. Drafts are labelled "Rules-based draft".
+- **Live mode.** Set `ANTHROPIC_API_KEY` and it asks Claude. Drafts are labelled "AI draft: check before sending".
+- **What Claude sees.** For the status update: the release name, summary, dates, the call and why, the top risks, counts, the release manager's name, and which tickets wait on what. For the two finders: ticket keys, titles, type, priority, status, area, team and blocked-by. It does not see emails, passwords, Jira tokens or the people list. Ticket titles do leave your server in live mode, so check that is allowed where you work.
+- **Safety.** Ticket text is treated as data, not instructions. Suggestions are checked before you see them: made-up tickets, unknown teams and repeats are dropped. Editors and admins only. Each person is limited to 30 requests an hour (`AI_PER_HOUR`).
+- **Not yet tried against the real API.** Live mode is tested with a stand-in service. Try it with a real key and a small test release first.
