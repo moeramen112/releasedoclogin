@@ -1,5 +1,5 @@
 {
-  "name": "release-readiness-login",
+  "name": "releasedoclogin",
   "version": "0.1.0",
   "description": "Release readiness and planning for a team: invite-only sign-in, roles, and releases saved on the server.",
   "type": "module",
