@@ -386,7 +386,6 @@ export function planConfig(plan) {
 }
 
 /** The built-in criteria, for the settings screen to list. */
-export const criteriaCatalog = () => planConfig(blankPlan(0)).criteria.map((c) => ({ id: c.id, name: c.name, required: c.required !== false }));
 
 const fmtWhen = (local) => { const ms = parseLocal(local); return ms === null ? "not set" : new Date(ms).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); };
 const joinList = (a) => (a.length <= 1 ? a.join("") : `${a.slice(0, -1).join(", ")} and ${a.at(-1)}`);

@@ -1406,7 +1406,6 @@ function planConfig(plan) {
 }
 
 /** The built-in criteria, for the settings screen to list. */
-const criteriaCatalog = () => planConfig(blankPlan(0)).criteria.map((c) => ({ id: c.id, name: c.name, required: c.required !== false }));
 
 const fmtWhen = (local) => { const ms = parseLocal(local); return ms === null ? "not set" : new Date(ms).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); };
 const joinList = (a) => (a.length <= 1 ? a.join("") : `${a.slice(0, -1).join(", ")} and ${a.at(-1)}`);
@@ -1571,7 +1570,7 @@ function statusModel(m) {
 /** The report as Markdown. Kept under its original name for existing callers. */
 const briefMarkdown = (plan, result, risk, now = Date.now()) => reportMarkdown(reportModel(plan, result, risk, now));
 
-return { TYPES, PRIORITIES, TICKET_TYPES, STATUSES, AREAS, ENVIRONMENTS, STRATEGIES, CHECK_STATES, defaultSettings, PHASES, ROLE_KEYS, TEMPLATES, fmtLocal, defaultPlan, mergeTickets, applyTemplate, blankPlan, nextPlan, generateRunbook, runbookStatus, planToSnapshot, planState, planConfig, criteriaCatalog, reportModel, reportMarkdown, reportHtml, reportDocument, reportWord, statusModel, briefMarkdown };
+return { TYPES, PRIORITIES, TICKET_TYPES, STATUSES, AREAS, ENVIRONMENTS, STRATEGIES, CHECK_STATES, defaultSettings, PHASES, ROLE_KEYS, TEMPLATES, fmtLocal, defaultPlan, mergeTickets, applyTemplate, blankPlan, nextPlan, generateRunbook, runbookStatus, planToSnapshot, planState, planConfig, reportModel, reportMarkdown, reportHtml, reportDocument, reportWord, statusModel, briefMarkdown };
 })();
 window.__STANDALONE = true;
 window.__READONLY = true;
