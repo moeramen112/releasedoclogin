@@ -4,17 +4,16 @@ import { evaluate } from "/engine.js";
 import { computeRisk } from "/risk.js";
 import { analyzeDependencies, parseKeys, TEAMS, HANDOFF_STATUS } from "/deps.js";
 import { mergeTickets, defaultPlan, blankPlan, nextPlan, applyTemplate, generateRunbook, planToSnapshot, planState, planConfig, briefMarkdown, reportModel, reportHtml, reportDocument, reportWord, statusModel, TYPES, PRIORITIES, TICKET_TYPES, STATUSES, AREAS, ENVIRONMENTS, STRATEGIES, CHECK_STATES, PHASES, ROLE_KEYS, TEMPLATES } from "/plan.js";
+import { $, esc } from "/uikit.js";
+import { renderVerdict, renderRisk, renderPoints, renderDeps, renderCriteria, renderBrief } from "/panels.js";
+import { createAssist } from "/assist.js";
 
-const $ = (s, r = document) => r.querySelector(s);
-const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const OLD_KEY = "rr.plan.v1"; // the single plan the first version of the planner saved
 const LIB_KEY = "rr.releases.v1";
 const STANDALONE = typeof window !== "undefined" && window.__STANDALONE === true;
 // The shareable preview: the example release, nothing can be changed, nothing is saved.
 const READONLY = typeof window !== "undefined" && window.__READONLY === true;
 const RUN_STATUS = ["todo", "doing", "done", "blocked"];
-const LABEL = { pass: "Pass", warn: "At risk", fail: "Failing", pending: "Pending", waived: "Waived" };
-const chip = (s) => `<span class="chip s-${s}"><i></i>${LABEL[s]}</span>`;
 
 const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
@@ -80,6 +79,12 @@ let remote = null; // { me, versions, pushed, chain, conflict, deleting }
 let lastEdit = 0;
 const readOnly = () => Boolean(remote && remote.me.role === "viewer");
 const toLogin = () => location.replace("/login.html?next=" + encodeURIComponent(location.pathname));
+
+// The AI helpers and the agent panel live in assist.js. They read the page state through these getters.
+const { AG, AI, agentBarBtn, agentLoad, agentPost, agentCheck, agentItem, renderAgent, aiCall, aiResolve } = createAssist({
+  get P() { return P; }, get lib() { return lib; }, get remote() { return remote; }, get integrations() { return integrations; },
+  readOnly, toLogin, saveLib, renderResults, renderTickets, renderHandoffs, changed, RH, READONLY,
+});
 
 function saveLib() {
   lib.items[lib.current] = P;
@@ -550,16 +555,6 @@ function compute() {
   return { now, result, risk, deps, model, brief: briefMarkdown(P, result, risk, now) };
 }
 
-const ratioColor = (r) => (r >= 0.66 ? "var(--bad)" : r >= 0.33 ? "var(--warn)" : "var(--good)");
-const FC_CHIP = { complete: "pass", "on-track": "pass", tight: "warn", behind: "fail", "after-freeze": "fail", unknown: "pending" };
-const FC_TEXT = { complete: "Complete", "on-track": "On track", tight: "Tight", behind: "Behind", "after-freeze": "Open after freeze", unknown: "No velocity" };
-
-function agentBarBtn() {
-  if (!integrations.server || !integrations.ai || READONLY) return "";
-  const n = AG.data?.openCount || 0;
-  return `<button class="btn small primary" type="button" data-act="agent-check"${AG.busy || readOnly() ? " disabled" : ""} title="Compare with the last check and prepare drafts for your OK">${AG.busy ? "Checking…" : "Check this release"}</button>${n ? `<a class="chip s-warn" href="#agent-panel" title="Drafts waiting for your OK">${n} to review</a>` : ""}`;
-}
-
 function renderSumbar({ result, risk, now }) {
   const v = result.verdict, cls = { "NO-GO": "nogo", HOLD: "hold", GO: "go" }[v.call];
   const deploy = Date.parse(P.when.deployAt);
@@ -574,251 +569,6 @@ function renderSumbar({ result, risk, now }) {
     `<span class="spacer"></span><div class="toolbar">${agentBarBtn()}${STANDALONE ? `<button class="btn small" type="button" data-act="copy-json">Copy plan JSON</button>` : `<button class="btn small" type="button" data-act="export">Export plan</button>`}</div>`;
 }
 
-function renderVerdict({ result }) {
-  const { verdict, criteria } = result;
-  const cls = { "NO-GO": "nogo", HOLD: "hold", GO: "go" }[verdict.call];
-  const total = criteria.length || 1;
-  const bar = ["pass", "waived", "warn", "pending", "fail"].map((k) => `<span class="p-${k}" style="width:${(verdict.counts[k] / total) * 100}%" title="${LABEL[k]}: ${verdict.counts[k]}"></span>`).join("");
-  const tally = ["pass", "warn", "pending", "fail", "waived"].filter((k) => verdict.counts[k]).map((k) => `<span class="chip s-${k}"><i></i>${verdict.counts[k]} ${LABEL[k].toLowerCase()}</span>`).join("");
-  const holding = criteria.filter((c) => verdict.holding.includes(c.id));
-  const list = holding.length
-    ? `<div class="holding"><h3>What is holding the release</h3><ul>${holding.map((c) => `<li>${chip(c.effective)}<span><strong>${esc(c.name)}</strong> <span class="mono">${esc(c.detail)}</span></span></li>`).join("")}</ul></div>`
-    : `<div class="holding"><h3>Nothing is holding the release</h3></div>`;
-  return `<section class="verdict" aria-label="Go/no-go verdict"><div class="v-badge ${cls}"><span class="label">Current call</span><span class="word">${esc(verdict.call)}</span><span>${esc(verdict.reason)}</span></div><div class="v-body"><div class="tally">${tally}</div><div class="progress" role="img" aria-label="Criteria mix">${bar}</div>${list}</div></section>`;
-}
-
-function renderRisk({ risk }) {
-  const sorted = [...risk.factors].sort((a, b) => b.points - a.points);
-  const active = sorted.filter((f) => f.points > 0), quiet = sorted.filter((f) => f.points === 0);
-  const rows = active.map((f) => {
-    const r = f.points / f.max;
-    return `<div class="factor"><span class="fl">${esc(f.label)}</span><span class="fv">${f.points} / ${f.max}</span><div class="fb"><i style="width:${r * 100}%;background:${ratioColor(r)}"></i></div><span class="fd">${esc(f.detail)}</span></div>`;
-  }).join("");
-  const recs = risk.recommendations.length
-    ? `<div class="sec-head"><h2>What to do about it</h2></div><ol class="recs">${risk.recommendations.map((r) => `<li><strong>${esc(r.label)}.</strong> ${esc(r.advice)}</li>`).join("")}</ol>`
-    : `<div class="msg">No single factor is driving the risk.</div>`;
-  const ladder = `<div class="sec-head"><h2>Suggested rollout for this risk level</h2></div><div class="ladder">${risk.ladder.steps.map((p, i) => `${i ? '<span class="arrow">→</span>' : ""}<span class="step">${p}%</span>`).join("")}<span class="msg">${risk.ladder.bake} minute bake</span></div><div class="msg">${esc(risk.ladder.note)}</div>`;
-  return `<section class="panel"><h2>Risk analysis</h2>
-    <div class="risk-head"><div><div class="risk-score">${risk.score}<small> / 100</small></div><div class="risk-level lvl-${risk.level}">${risk.level} risk</div></div>
-    <div class="meter-wrap"><div class="meter"><span class="m1"></span><span class="m2"></span><span class="m3"></span><span class="m4"></span></div><div class="meter-mark" style="left:${risk.score}%"></div><div class="meter-labels"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div></div></div>
-    <div>${rows}</div>${quiet.length ? `<div class="msg">No risk from: ${quiet.map((f) => esc(f.label.toLowerCase())).join(", ")}.</div>` : ""}
-    ${recs}${ladder}</section>`;
-}
-
-function renderPoints({ risk }) {
-  const p = risk.points, fc = risk.forecast, t = p.total || 1;
-  const areas = Object.entries(p.byArea).sort((a, b) => b[1].total - a[1].total);
-  return `<section class="panel"><div class="panel-head"><h2>Story points</h2><span class="chip s-${FC_CHIP[fc.state]}"><i></i>${FC_TEXT[fc.state]}</span></div>
-    <div class="pts-stack" role="img" aria-label="${p.done} done, ${p.inFlight} in flight, ${p.todo} not started"><span style="width:${(p.done / t) * 100}%;background:var(--good)"></span><span style="width:${(p.inFlight / t) * 100}%;background:var(--pend)"></span><span style="width:${(p.todo / t) * 100}%;background:var(--line)"></span></div>
-    <div class="legend"><span><i style="background:var(--good)"></i>Done ${p.done}</span><span><i style="background:var(--pend)"></i>In flight ${p.inFlight}</span><span><i style="background:var(--line)"></i>Not started ${p.todo}</span></div>
-    <div class="stats"><div class="stat"><b>${p.total}</b><span>Total points</span></div><div class="stat"><b>${p.remaining}</b><span>Remaining</span></div><div class="stat"><b>${fc.needPerDay ?? "n/a"}</b><span>Needed per day</span></div><div class="stat"><b>${fc.velocity || "n/a"}</b><span>Velocity per day</span></div></div>
-    <div class="msg">${esc(fc.detail)}</div>
-    <div>${areas.map(([a, v]) => `<div class="area-row"><span>${esc(a)}</span><div class="fb"><i style="width:${v.total ? (v.done / v.total) * 100 : 0}%"></i></div><span class="mono">${v.done}/${v.total}</span></div>`).join("")}</div></section>`;
-}
-
-function renderDeps({ result, deps }) {
-  const c = result.criteria.find((x) => x.id === "deps");
-  const head = `<div class="panel-head"><h2>Dependencies</h2>${c ? chip(c.effective) : ""}</div>`;
-  if (!deps.any) return `<section class="panel">${head}<div class="msg">Nothing entered yet. Use <strong>Team</strong> and <strong>Blocked by</strong> on the tickets, and <strong>Handoffs between teams</strong> below them, to show what waits on what. Pulling from Jira fills in "is blocked by" links for you.</div></section>`;
-  const on = (w) => w.on.map((x) => (x.kind === "handoff" ? `${esc(x.what)} <span class="msg">(${esc(x.team || "handoff")}, ${esc(x.status)})</span>` : `<span class="mono">${esc(x.key)}</span> <span class="msg">(${esc(x.status)})</span>`)).join(", ");
-  const h3 = (t) => `<div class="sec-head"><h2>${esc(t)}</h2></div>`;
-  let html = head + (c ? `<div class="msg">${esc(c.detail)}</div>` : "");
-  if (deps.cycles.length) html += `<div class="banner bad" role="alert"><strong>Circular dependency.</strong><span>${deps.cycles.map((x) => esc([...x, x[0]].join(" → "))).join("; ")}. None of these can start until one of the links is removed.</span></div>`;
-  if (deps.longestChain.length >= 2) html += h3("Longest chain, in the order it must happen") + `<div class="ladder">${deps.longestChain.keys.map((k, i) => `${i ? '<span class="arrow">→</span>' : ""}<span class="step mono">${esc(k)}</span>`).join("")}</div>`;
-  if (deps.finishFirst.length) html += h3("Finish these first") + `<ul class="plain">${deps.finishFirst.map((x) => `<li><span class="mono">${esc(x.key)}</span>${x.team ? ` <span class="msg">${esc(x.team)}</span>` : ""} ${esc(x.summary)}: holds up ${x.unblocks} ${x.unblocks === 1 ? "ticket" : "tickets"}</li>`).join("")}</ul>`;
-  if (deps.waiting.length) html += h3("Waiting") + `<div class="tablewrap"><table class="tbl"><thead><tr><th>Ticket</th><th>Team</th><th>Status</th><th>Waiting on</th></tr></thead><tbody>${deps.waiting.map((w) => `<tr><td><span class="mono">${esc(w.key)}</span> ${esc(w.summary)}</td><td>${esc(w.team || "—")}</td><td>${esc(w.status)}</td><td>${on(w)}</td></tr>`).join("")}</tbody></table></div>`;
-  if (deps.startedEarly.length) html += h3("Started before the input was done") + `<ul class="plain">${deps.startedEarly.map((w) => `<li><span class="mono">${esc(w.key)}</span> is ${esc(w.status.toLowerCase())} but waiting on ${on(w)}</li>`).join("")}</ul>`;
-  if (deps.ready.length) html += h3("Ready to start now") + `<ul class="plain">${deps.ready.map((x) => `<li><span class="mono">${esc(x.key)}</span> ${esc(x.summary)}</li>`).join("")}</ul>`;
-  const lateH = [...deps.handoffs.overdue.map((x) => `${esc(x.what)} (${esc(x.from || "?")} to ${esc(x.to || "?")}) is overdue`), ...deps.handoffs.blocked.map((x) => `${esc(x.what)} is blocked`), ...deps.handoffs.afterFreeze.map((x) => `${esc(x.what)} is due after the code freeze`)];
-  if (lateH.length) html += h3("Handoffs to chase") + `<ul class="plain">${lateH.map((x) => `<li>${x}</li>`).join("")}</ul>`;
-  return `<section class="panel">${html}</section>`;
-}
-
-function renderCriteria({ result }) {
-  const order = { fail: 0, warn: 1, pending: 2, waived: 3, pass: 4 };
-  const sorted = [...result.criteria].sort((a, b) => order[a.effective] - order[b.effective]);
-  const rows = sorted.map((c) => {
-    const w = c.waiver, active = w && w.valid && !w.stale;
-    const wn = w && c.effective === "waived" ? `<div class="wn">Waived by ${esc(w.approver)}: ${esc(w.reason)}</div>`
-      : w && w.stale ? `<div class="wn stale">A waiver from ${esc(w.approver)} no longer applies because this got worse.</div>` : "";
-    const btns = [
-      c.status !== "pass" && !active ? `<button class="btn small" type="button" data-act="waive" data-id="${esc(c.id)}">Waive</button>` : "",
-      w ? `<button class="btn small" type="button" data-act="unwaive" data-id="${esc(c.id)}">Remove waiver</button>` : "",
-    ].join("");
-    const form = openWaive === c.id
-      ? `<form class="form wf" data-form="waive" data-id="${esc(c.id)}"><label>Approved by<input name="approver" required maxlength="80" value="${esc(P.people.releaseManager)}"></label><label>Reason<textarea name="reason" required maxlength="400" placeholder="Why this is acceptable, and what follows (a hotfix, a monitor)"></textarea></label>${waiveError ? `<div class="err" role="alert">${esc(waiveError)}</div>` : ""}<div class="row"><button class="btn small primary" type="submit">Record waiver</button><button class="btn small" type="button" data-act="close-waive">Cancel</button></div></form>` : "";
-    return `<div class="crow">${chip(c.effective)}<div><span class="cn">${esc(c.name)}</span><span class="adv">${c.required ? "REQUIRED" : "ADVISORY"}</span><div class="cd">${esc(c.detail)}</div></div><div class="row-actions">${btns}</div>${wn}${form}</div>`;
-  }).join("");
-  return `<section class="panel"><div class="panel-head"><h2>Go/no-go criteria</h2><span class="note">A waiver needs a named approver and a reason.</span></div><div>${rows}</div></section>`;
-}
-
-
-/* ---------- AI helpers: they suggest, a person approves ---------- */
-
-const AI = { busy: "", audience: "leadership", briefing: null, kind: "", sugg: [], error: "", note: "" };
-
-const aiLabel = (s) => ({
-  tag: `${s.key}: mark as a migration`,
-  area: `${s.key}: change area to ${s.value}`,
-  team: `${s.key}: set team to ${s.value}`,
-  blockedBy: `${s.key} waits on ${s.value}`,
-  handoff: `New handoff: ${s.value?.from} to ${s.value?.to}${s.value?.blocks ? ` (blocks ${s.value.blocks})` : ""}`,
-}[s.kind] || "Suggestion");
-
-function renderQuickHelpers() {
-  const live = integrations.ai === "live";
-  const off = readOnly() || AI.busy;
-  const btn = (act, label, tip) => `<button class="btn small" type="button" data-act="${act}" title="${esc(tip)}"${off ? " disabled" : ""}>${label}</button>`;
-  const chips = { high: "s-pass", medium: "s-warn", low: "s-pending" };
-  const list = AI.sugg.length
-    ? `<div class="ai-list">${AI.sugg.map((s) => `<div class="ai-item"><div><strong>${esc(aiLabel(s))}</strong> <span class="chip ${chips[s.confidence] || "s-pending"}">${esc(s.confidence)}</span><div class="note">${esc(s.why)}</div></div><div class="row-actions"><button class="btn small primary" type="button" data-act="ai-accept" data-id="${esc(s.id)}">Apply</button><button class="btn small" type="button" data-act="ai-dismiss" data-id="${esc(s.id)}">Dismiss</button></div></div>`).join("")}${AI.sugg.length > 1 ? `<div class="row-actions"><button class="btn small" type="button" data-act="ai-accept-all">Apply all</button><button class="btn small" type="button" data-act="ai-dismiss-all">Dismiss all</button></div>` : ""}</div>`
-    : AI.kind ? `<p class="note">${AI.kind === "risks" ? "Nothing new spotted." : "Nothing new suggested."}</p>` : "";
-  const brief = AI.briefing ? `<div class="ai-brief"><div class="panel-head"><h3>${AI.briefing.audience === "leadership" ? "Leadership update" : "Team update"} <span class="chip s-waived">${live ? "AI draft: check before sending" : "Rules-based draft"}</span></h3><button class="btn small" type="button" data-act="ai-copy">Copy</button></div><pre class="brief" id="ai-brief-text">${esc(AI.briefing.text)}</pre></div>` : "";
-  return `<div class="ai-quick"><p class="note">Quick helpers give an answer on screen only. Nothing is saved to the Inbox.</p>
-    <div class="row-actions"><select id="ai-audience" aria-label="Who is the update for"${off ? " disabled" : ""}><option value="leadership"${AI.audience === "leadership" ? " selected" : ""}>For leadership</option><option value="engineering"${AI.audience === "engineering" ? " selected" : ""}>For the team</option></select>
-    ${btn("ai-briefing", "Write status update", "A short update in plain words")}${btn("ai-risks", "Spot risks", "Finds migrations and sensitive work that are not marked")}${btn("ai-deps", "Find dependencies", "Finds work that probably waits on other work")}<span class="msg ${AI.error ? "bad" : ""}" id="ai-msg">${esc(AI.busy ? "Working…" : AI.error || AI.note)}</span></div>
-    ${brief}${list}</div>`;
-}
-
-/* ---------- the agent: Check this release, the Auto switch and the Inbox ---------- */
-
-const AG = { forId: "", data: null, busy: false, msg: "", bad: false, total: 0, quickOpen: false };
-// The page redraws often, so remember whether Quick helpers is open.
-document.addEventListener("toggle", (e) => { if (e.target.classList?.contains("quick")) AG.quickOpen = e.target.open; }, true);
-const agoText = (ms) => { const m = Math.round((Date.now() - ms) / 60000); return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`; };
-
-async function agentLoad() {
-  if (!remote || !lib.current) return;
-  const id = lib.current;
-  AG.forId = id;
-  try {
-    const res = await fetch("/api/agent?releaseId=" + encodeURIComponent(id));
-    if (res.status === 401) { toLogin(); return; }
-    AG.data = res.ok ? await res.json() : null; // 404 until the release has been saved once
-    const t = await fetch("/api/agent");
-    if (t.ok) { AG.total = (await t.json()).openCount; document.querySelectorAll("[data-inbox]").forEach((a) => { a.textContent = AG.total ? `Inbox (${AG.total})` : "Inbox"; }); }
-  } catch { /* shows the last known state */ }
-  if (lib.current === id) renderResults();
-}
-
-async function agentPost(path, body) {
-  const res = await fetch(path, { method: "POST", headers: RH, body: JSON.stringify(body) });
-  if (res.status === 401) { toLogin(); throw new Error("Sign in required."); }
-  const d = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(d.error || `Request failed (${res.status}).`);
-  return d;
-}
-
-async function agentCheck() {
-  if (AG.busy || readOnly()) return;
-  AG.busy = true; AG.msg = "Saving, then checking…"; AG.bad = false; renderResults();
-  try {
-    saveLib();
-    await remote.chain; // the server checks the saved copy, so make sure your latest edits are saved first
-    if (remote.conflict === lib.current) throw new Error("Resolve the save conflict first, then check again.");
-    AG.data = await agentPost("/api/agent/check", { releaseId: lib.current });
-    AG.forId = lib.current;
-    const r = AG.data.run;
-    AG.msg = r.first ? "Starting point saved." : r.quiet ? "Nothing new since the last check." : r.created ? `${r.created} new item${r.created === 1 ? "" : "s"} for your OK.` : "Checked. Nothing needs your OK.";
-    agentLoad();
-  } catch (e) { AG.msg = e.message; AG.bad = true; }
-  AG.busy = false; renderResults();
-}
-
-async function agentItem(id, action) {
-  const it = AG.data?.items.find((x) => x.id === id);
-  if (!it) return;
-  try {
-    if (action === "applied") {
-      if (!aiApply(it.suggestion)) { AG.msg = "That no longer applies, so nothing was changed."; AG.bad = true; }
-      else { renderTickets(); renderHandoffs(); changed(); AG.msg = "Applied. Check the tickets and handoffs on the left."; AG.bad = false; }
-    }
-    if (action === "copy") { await navigator.clipboard.writeText(it.text); AG.msg = "Copied."; AG.bad = false; renderResults(); return; }
-    await agentPost("/api/agent/item", { id, action: action === "copy" ? "done" : action });
-    AG.msg = action === "send" ? "Posted to Slack." : AG.msg; if (action === "send") AG.bad = false;
-  } catch (e) { AG.msg = e.message; AG.bad = true; }
-  await agentLoad();
-}
-
-function renderAgent() {
-  if (!integrations.server || !integrations.ai || READONLY) return "";
-  const d = AG.data, ro = readOnly();
-  const live = integrations.ai === "live";
-  const off = ro || AG.busy ? " disabled" : "";
-  const run = d?.run;
-  const items = (d?.items || []).filter((i) => i.status === "open");
-  const autoOn = Boolean(d?.auto.on), hours = d?.auto.hours || 4;
-  const last = run ? `Last checked ${agoText(run.at)} (${run.source === "auto" ? "auto" : run.by})` : "Not checked yet";
-  const changes = run?.changes?.length ? `<ul class="ag-changes">${run.changes.slice(0, 8).map((c) => `<li class="${c.importance === "high" ? "hi" : ""}">${esc(c.text)}</li>`).join("")}${run.changes.length > 8 ? `<li class="note">and ${run.changes.length - 8} more</li>` : ""}</ul>` : "";
-  const state = !d ? `<p class="note">Save the release first (it saves on its own after a moment), then press Check this release.</p>`
-    : !run ? `<p class="note">Press <strong>Check this release</strong> to save a starting point. After that, each check tells you what changed.</p>`
-    : run.first ? `<p class="note">Starting point saved. The next check will show what changed.</p>`
-    : run.changes.length ? `<h3 class="ag-h">What changed since the check before</h3>${changes}` : `<p class="note">Nothing changed since the check before.</p>`;
-  const card = (i) => {
-    const acts = i.kind === "suggestion"
-      ? `<button class="btn small primary" type="button" data-act="agent-item" data-id="${esc(i.id)}" data-do="applied"${off}>Apply</button><button class="btn small" type="button" data-act="agent-item" data-id="${esc(i.id)}" data-do="dismiss"${off}>Dismiss</button>`
-      : `${i.kind === "slack" && d.slack ? `<button class="btn small primary" type="button" data-act="agent-item" data-id="${esc(i.id)}" data-do="send"${off}>Post to Slack</button>` : ""}<button class="btn small" type="button" data-act="agent-item" data-id="${esc(i.id)}" data-do="copy"${off} title="Copies the text and marks it as handled">Copy and mark sent</button><button class="btn small" type="button" data-act="agent-item" data-id="${esc(i.id)}" data-do="dismiss"${off}>Dismiss</button><a class="btn small" href="/inbox.html" title="Edit the text in the Inbox">Edit in Inbox</a>`;
-    const kind = { slack: "Slack draft", chase: "Chase note", suggestion: "Suggestion" }[i.kind];
-    return `<div class="ai-item"><div><strong>${esc(i.title)}</strong> <span class="chip ${i.kind === "suggestion" ? "s-waived" : "s-warn"}">${kind}</span>${i.text ? `<div class="note ag-preview">${esc(i.text.slice(0, 220))}${i.text.length > 220 ? "…" : ""}</div>` : ""}<div class="note">${esc(i.why)}${i.source === "auto" ? " · found by Auto" : ""}</div></div><div class="row-actions">${acts}</div></div>`;
-  };
-  const list = items.length ? `<h3 class="ag-h">Needs your OK (${items.length})</h3><div class="ai-list">${items.map(card).join("")}</div>` : run && !run.first ? `<p class="note">Nothing needs your OK right now.</p>` : "";
-  return `<section class="panel" id="agent-panel"><div class="panel-head"><h2>Agent</h2><span class="note">${live ? "Uses Claude to write drafts. You approve everything." : "Demo mode: simple rules, no AI key set. You approve everything."}</span></div>
-    <div class="row-actions"><button class="btn small primary" type="button" data-act="agent-check"${off}>Check this release</button>
-    <label class="ag-auto"><input type="checkbox" id="ag-auto-on"${autoOn ? " checked" : ""}${!d || ro ? " disabled" : ""}> Auto</label><select id="ag-auto-hours" aria-label="How often Auto checks"${!d || ro ? " disabled" : ""}>${[[1, "every hour"], [4, "every 4 hours"], [12, "every 12 hours"], [24, "every day"]].map(([h, l]) => `<option value="${h}"${hours === h ? " selected" : ""}>${l}</option>`).join("")}</select>
-    <span class="msg ${AG.bad ? "bad" : ""}" id="ag-msg">${esc(AG.msg)}</span></div>
-    <p class="note">${esc(last)}. Auto is ${autoOn ? `on, ${hours === 24 ? "daily" : `every ${hours === 1 ? "hour" : hours + " hours"}`}. It only runs while the server is running and only prepares drafts` : "off"}.</p>
-    ${state}${list}
-    <details class="quick"${AG.quickOpen ? " open" : ""}><summary>Quick helpers</summary>${renderQuickHelpers()}</details></section>`;
-}
-
-async function aiCall(kind) {
-  const path = { briefing: "briefing", risks: "risks", deps: "dependencies" }[kind];
-  AI.busy = kind; AI.error = ""; AI.note = ""; renderResults();
-  try {
-    const res = await fetch("/api/ai/" + path, { method: "POST", headers: RH, body: JSON.stringify({ plan: P, audience: AI.audience }) });
-    if (res.status === 401) { toLogin(); return; }
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(body.error || `Request failed (${res.status}).`);
-    if (kind === "briefing") AI.briefing = body;
-    else { AI.kind = kind; AI.sugg = [...AI.sugg.filter((s) => (kind === "risks" ? ["blockedBy", "team", "handoff"] : ["tag", "area"]).includes(s.kind)), ...body.suggestions].map((s, i) => ({ ...s, id: String(i + 1) })); AI.note = body.suggestions.length ? "" : "Nothing new found."; }
-  } catch (e) {
-    AI.error = e.message;
-  }
-  AI.busy = "";
-  renderResults();
-}
-
-/** Apply one approved suggestion to the plan. Returns true if something changed. */
-function aiApply(s) {
-  if (s.kind === "handoff") {
-    (P.handoffs ||= []).push({ what: s.value.what, from: s.value.from, to: s.value.to, owner: "", due: P.when.freezeAt || "", status: s.value.status || "Not started", blocks: s.value.blocks || "" });
-    return true;
-  }
-  const t = P.tickets.find((x) => String(x.key).toUpperCase() === String(s.key).toUpperCase());
-  if (!t) return false;
-  if (s.kind === "tag") { t.tags = { ...(t.tags || {}), migration: true }; return true; }
-  if (s.kind === "area") { t.area = s.value; return true; }
-  if (s.kind === "team") { t.team = s.value; return true; }
-  if (s.kind === "blockedBy") {
-    const have = parseKeys(t.blockedBy);
-    if (have.includes(String(s.value).toUpperCase())) return false;
-    t.blockedBy = [...have, s.value].join(", ");
-    return true;
-  }
-  return false;
-}
-
-function aiResolve(ids, apply) {
-  let n = 0;
-  for (const s of AI.sugg.filter((x) => ids.includes(x.id))) if (apply && aiApply(s)) n++;
-  AI.sugg = AI.sugg.filter((x) => !ids.includes(x.id));
-  AI.note = apply ? `Applied ${n}. Check the tickets and handoffs on the left.` : "";
-  if (apply) { renderTickets(); renderHandoffs(); changed(); } else renderResults();
-}
-
-function renderBrief({ brief }) {
-  return `<section class="panel"><div class="panel-head"><h2>Release brief</h2><div class="row-actions"><button class="btn small" type="button" data-act="copy-doc" title="Paste into Google Docs, Word, Confluence or Notion with formatting kept">Copy for Docs</button><button class="btn small" type="button" data-act="copy-brief">Copy Markdown</button>${STANDALONE ? "" : `<button class="btn small" type="button" data-act="download-word">Word (.doc)</button><button class="btn small" type="button" data-act="download-doc" title="Open it, then Print and Save as PDF">Printable page</button><button class="btn small" type="button" data-act="download-status" title="One page for leadership">Status one-pager</button><button class="btn small" type="button" data-act="download-brief">.md</button>`}<span class="msg" id="brief-msg"></span></div></div><pre class="brief" id="brief">${esc(brief)}</pre></section>`;
-}
 
 let last = null;
 function renderResults() {
@@ -834,7 +584,7 @@ function renderResults() {
   const roNote = READONLY ? `<div class="banner"><strong>View only.</strong><span>This is an example release with invented names and numbers. You can look at everything, but nothing can be changed or saved.</span></div>` : "";
   const note = roNote + (fresh ? `<div class="banner"><strong>New release.</strong><span>Name it and set the dates on the left, then add tickets or pull them from Jira. The call stays HOLD until the checks have data, and anything unknown counts as risk.</span></div>` : "");
   renderRelSelect();
-  $("#results").innerHTML = note + renderVerdict(last) + renderAgent() + renderRisk(last) + renderPoints(last) + renderDeps(last) + renderCriteria(last) + renderBrief(last);
+  $("#results").innerHTML = note + renderVerdict(last) + renderAgent() + renderRisk(last) + renderPoints(last) + renderDeps(last) + renderCriteria(last, { P, openWaive, waiveError }) + renderBrief(last, { STANDALONE });
   const p = last.risk.points;
   const sum = $("#tk-sum");
   if (sum) sum.textContent = `${p.tickets} tickets · ${p.total} points · ${p.done} done`;
