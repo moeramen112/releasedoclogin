@@ -1709,9 +1709,9 @@ function createAssist(c) {
       : AI.kind ? `<p class="note">${AI.kind === "risks" ? "Nothing new spotted." : "Nothing new suggested."}</p>` : "";
     const brief = AI.briefing ? `<div class="ai-brief"><div class="panel-head"><h3>${AI.briefing.audience === "leadership" ? "Leadership update" : "Team update"} <span class="chip s-waived">${live ? "AI draft: check before sending" : "Rules-based draft"}</span></h3><button class="btn small" type="button" data-act="ai-copy">Copy</button></div><pre class="brief" id="ai-brief-text">${esc(AI.briefing.text)}</pre></div>` : "";
     return `<div class="ai-quick"><p class="note">Quick helpers give an answer on screen only. Nothing is saved to the Inbox.</p>
-      <div class="row-actions"><select id="ai-audience" aria-label="Who is the update for"${off ? " disabled" : ""}><option value="leadership"${AI.audience === "leadership" ? " selected" : ""}>For leadership</option><option value="engineering"${AI.audience === "engineering" ? " selected" : ""}>For the team</option></select>
-      ${btn("ai-briefing", "Write status update", "A short update in plain words")}${btn("ai-risks", "Spot risks", "Finds migrations and sensitive work that are not marked")}${btn("ai-deps", "Find dependencies", "Finds work that probably waits on other work")}<span class="msg ${AI.error ? "bad" : ""}" id="ai-msg">${esc(AI.busy ? "Working…" : AI.error || AI.note)}</span></div>
-      ${brief}${list}</div>`;
+    <div class="row-actions"><select id="ai-audience" aria-label="Who is the update for"${off ? " disabled" : ""}><option value="leadership"${AI.audience === "leadership" ? " selected" : ""}>For leadership</option><option value="engineering"${AI.audience === "engineering" ? " selected" : ""}>For the team</option></select>
+    ${btn("ai-briefing", "Write status update", "A short update in plain words")}${btn("ai-risks", "Spot risks", "Finds migrations and sensitive work that are not marked")}${btn("ai-deps", "Find dependencies", "Finds work that probably waits on other work")}<span class="msg ${AI.error ? "bad" : ""}" id="ai-msg">${esc(AI.busy ? "Working…" : AI.error || AI.note)}</span></div>
+    ${brief}${list}</div>`;
   }
 
   /* ---------- the agent: Check this release, the Auto switch and the Inbox ---------- */
@@ -1797,12 +1797,12 @@ function createAssist(c) {
     };
     const list = items.length ? `<h3 class="ag-h">Needs your OK (${items.length})</h3><div class="ai-list">${items.map(card).join("")}</div>` : run && !run.first ? `<p class="note">Nothing needs your OK right now.</p>` : "";
     return `<section class="panel" id="agent-panel"><div class="panel-head"><h2>Agent</h2><span class="note">${live ? "Uses Claude to write drafts. You approve everything." : "Demo mode: simple rules, no AI key set. You approve everything."}</span></div>
-      <div class="row-actions"><button class="btn small primary" type="button" data-act="agent-check"${off}>Check this release</button>
-      <label class="ag-auto"><input type="checkbox" id="ag-auto-on"${autoOn ? " checked" : ""}${!d || ro ? " disabled" : ""}> Auto</label><select id="ag-auto-hours" aria-label="How often Auto checks"${!d || ro ? " disabled" : ""}>${[[1, "every hour"], [4, "every 4 hours"], [12, "every 12 hours"], [24, "every day"]].map(([h, l]) => `<option value="${h}"${hours === h ? " selected" : ""}>${l}</option>`).join("")}</select>
-      <span class="msg ${AG.bad ? "bad" : ""}" id="ag-msg">${esc(AG.msg)}</span></div>
-      <p class="note">${esc(last)}. Auto is ${autoOn ? `on, ${hours === 24 ? "daily" : `every ${hours === 1 ? "hour" : hours + " hours"}`}. It only runs while the server is running and only prepares drafts` : "off"}.</p>
-      ${state}${list}
-      <details class="quick"${AG.quickOpen ? " open" : ""}><summary>Quick helpers</summary>${renderQuickHelpers()}</details></section>`;
+    <div class="row-actions"><button class="btn small primary" type="button" data-act="agent-check"${off}>Check this release</button>
+    <label class="ag-auto"><input type="checkbox" id="ag-auto-on"${autoOn ? " checked" : ""}${!d || ro ? " disabled" : ""}> Auto</label><select id="ag-auto-hours" aria-label="How often Auto checks"${!d || ro ? " disabled" : ""}>${[[1, "every hour"], [4, "every 4 hours"], [12, "every 12 hours"], [24, "every day"]].map(([h, l]) => `<option value="${h}"${hours === h ? " selected" : ""}>${l}</option>`).join("")}</select>
+    <span class="msg ${AG.bad ? "bad" : ""}" id="ag-msg">${esc(AG.msg)}</span></div>
+    <p class="note">${esc(last)}. Auto is ${autoOn ? `on, ${hours === 24 ? "daily" : `every ${hours === 1 ? "hour" : hours + " hours"}`}. It only runs while the server is running and only prepares drafts` : "off"}.</p>
+    ${state}${list}
+    <details class="quick"${AG.quickOpen ? " open" : ""}><summary>Quick helpers</summary>${renderQuickHelpers()}</details></section>`;
   }
 
   async function aiCall(kind) {
@@ -1863,7 +1863,7 @@ const { evaluate } = __mod_engine;
 const { computeRisk } = __mod_risk;
 const { analyzeDependencies, parseKeys, TEAMS, HANDOFF_STATUS } = __mod_deps;
 const { mergeTickets, defaultPlan, blankPlan, nextPlan, applyTemplate, generateRunbook, planToSnapshot, planState, planConfig, briefMarkdown, reportModel, reportHtml, reportDocument, reportWord, statusModel, TYPES, PRIORITIES, TICKET_TYPES, STATUSES, AREAS, ENVIRONMENTS, STRATEGIES, CHECK_STATES, PHASES, ROLE_KEYS, TEMPLATES } = __mod_plan;
-const { $, esc, LABEL, chip } = __mod_uikit;
+const { $, esc } = __mod_uikit;
 const { renderVerdict, renderRisk, renderPoints, renderDeps, renderCriteria, renderBrief } = __mod_panels;
 const { createAssist } = __mod_assist;
 const OLD_KEY = "rr.plan.v1"; // the single plan the first version of the planner saved
@@ -1939,7 +1939,7 @@ const readOnly = () => Boolean(remote && remote.me.role === "viewer");
 const toLogin = () => location.replace("/login.html?next=" + encodeURIComponent(location.pathname));
 
 // The AI helpers and the agent panel live in assist.js. They read the page state through these getters.
-const { AG, AI, agentBarBtn, agentLoad, agentPost, agentCheck, agentItem, renderAgent, aiCall, aiApply, aiResolve } = createAssist({
+const { AG, AI, agentBarBtn, agentLoad, agentPost, agentCheck, agentItem, renderAgent, aiCall, aiResolve } = createAssist({
   get P() { return P; }, get lib() { return lib; }, get remote() { return remote; }, get integrations() { return integrations; },
   readOnly, toLogin, saveLib, renderResults, renderTickets, renderHandoffs, changed, RH, READONLY,
 });

@@ -4,7 +4,7 @@ import { evaluate } from "/engine.js";
 import { computeRisk } from "/risk.js";
 import { analyzeDependencies, parseKeys, TEAMS, HANDOFF_STATUS } from "/deps.js";
 import { mergeTickets, defaultPlan, blankPlan, nextPlan, applyTemplate, generateRunbook, planToSnapshot, planState, planConfig, briefMarkdown, reportModel, reportHtml, reportDocument, reportWord, statusModel, TYPES, PRIORITIES, TICKET_TYPES, STATUSES, AREAS, ENVIRONMENTS, STRATEGIES, CHECK_STATES, PHASES, ROLE_KEYS, TEMPLATES } from "/plan.js";
-import { $, esc, LABEL, chip } from "/uikit.js";
+import { $, esc } from "/uikit.js";
 import { renderVerdict, renderRisk, renderPoints, renderDeps, renderCriteria, renderBrief } from "/panels.js";
 import { createAssist } from "/assist.js";
 
@@ -81,7 +81,7 @@ const readOnly = () => Boolean(remote && remote.me.role === "viewer");
 const toLogin = () => location.replace("/login.html?next=" + encodeURIComponent(location.pathname));
 
 // The AI helpers and the agent panel live in assist.js. They read the page state through these getters.
-const { AG, AI, agentBarBtn, agentLoad, agentPost, agentCheck, agentItem, renderAgent, aiCall, aiApply, aiResolve } = createAssist({
+const { AG, AI, agentBarBtn, agentLoad, agentPost, agentCheck, agentItem, renderAgent, aiCall, aiResolve } = createAssist({
   get P() { return P; }, get lib() { return lib; }, get remote() { return remote; }, get integrations() { return integrations; },
   readOnly, toLogin, saveLib, renderResults, renderTickets, renderHandoffs, changed, RH, READONLY,
 });
