@@ -13,6 +13,7 @@ import { DEMO_SEED } from "./sources/fixture.js";
 import { jiraConfigured, fetchJiraRelease } from "./sources/jira.js";
 import { createJobs } from "./jobs.js";
 import { createAi } from "./ai.js";
+import { createAgentService, AgentError } from "./agent-service.js";
 import { buildSlackMessage, sendSlack } from "./notify.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -25,7 +26,7 @@ const RELEASE_RE = /^\/api\/releases\/([a-z0-9-]{3,64})$/;
 const PUBLIC_API = new Set(["GET /api/health", "GET /api/auth/status", "POST /api/auth/login", "POST /api/auth/accept"]);
 const PUBLIC_FILES = new Set(["/login.html", "/invite.html", "/login.js", "/styles.css"]);
 // Who may call what. Anything not listed needs only a signed-in user (viewer).
-const NEEDS = { "POST /api/waive": "editor", "POST /api/unwaive": "editor", "POST /api/manual": "editor", "POST /api/notify": "editor", "POST /api/ai/briefing": "editor", "POST /api/ai/risks": "editor", "POST /api/ai/dependencies": "editor", "GET /api/jira/issues": "editor", "GET /api/admin/users": "admin", "POST /api/admin/users": "admin", "POST /api/admin/users/reinvite": "admin", "POST /api/admin/users/update": "admin" };
+const NEEDS = { "POST /api/waive": "editor", "POST /api/unwaive": "editor", "POST /api/manual": "editor", "POST /api/notify": "editor", "POST /api/agent/check": "editor", "POST /api/agent/auto": "editor", "POST /api/agent/item": "editor", "POST /api/ai/briefing": "editor", "POST /api/ai/risks": "editor", "POST /api/ai/dependencies": "editor", "GET /api/jira/issues": "editor", "GET /api/admin/users": "admin", "POST /api/admin/users": "admin", "POST /api/admin/users/reinvite": "admin", "POST /api/admin/users/update": "admin" };
 const SECURITY_HEADERS = { "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY" };
 const LOCAL_USER = { email: "local", name: "Local user", role: "admin" };
 const MAX_RELEASES = 500;
@@ -43,8 +44,8 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
   const auth = authOn === false ? null : await createAuth({ dir: stateDir, env });
   const relDb = await createJsonStore(path.join(stateDir, "releases.json"), () => ({ releases: {}, audit: [] }));
   const jobsDb = await createJsonStore(path.join(stateDir, "jobs.json"), () => ({ releases: {} }));
-  const jobs = createJobs({ relDb, jobsDb, config, env, deps, log: (m) => console.error(m) });
   const ai = deps.ai || createAi({ env, fetchImpl: deps.fetchAnthropic || fetch });
+  const agentDb = await createJsonStore(path.join(stateDir, "agent.json"), () => ({ runs: {}, auto: {}, inbox: [] }));
   const aiUse = new Map(); // person -> times used in the last hour, so a loop cannot run up a bill
   const AI_PER_HOUR = Math.max(1, Number(env.AI_PER_HOUR) || 30);
   const aiLimit = (user) => {
@@ -53,6 +54,8 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
     if (recent.length >= AI_PER_HOUR) throw new HttpError(429, `You have used the AI helper ${AI_PER_HOUR} times in the last hour. Try again later.`);
     recent.push(now); aiUse.set(k, recent);
   };
+  const agent = createAgentService({ relDb, agentDb, ai, env, deps, log: (m) => console.error(m) });
+  const jobs = createJobs({ relDb, jobsDb, config, env, deps, agent, log: (m) => console.error(m) });
   const stores = {};
   // Waivers, manual checks and the audit log belong to one release, so each repo and release branch gets its own file.
   const storeKey = ({ mode, release }) => (mode === "demo" ? "demo" : `live.${release.repo}@${release.headRef}`.toLowerCase().replace(/\//g, "__").replace(/[^a-z0-9@._-]+/g, "-"));
@@ -266,6 +269,31 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
     "GET /api/releases": async (req, url, user) => {
       const rels = Object.values(relDb.get().releases).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       return { me: user, authEnabled: Boolean(auth), releases: rels };
+    },
+
+    // The agent: compares a release with its last check and writes drafts into the Inbox. It never sends or changes anything by itself.
+    "GET /api/agent": async (req, url) => {
+      const id = url.searchParams.get("releaseId");
+      if (!id) return agent.inbox();
+      if (!relDb.get().releases[id]) throw new HttpError(404, "No such release.");
+      return agent.view(id);
+    },
+    "POST /api/agent/check": async (req, url, user) => {
+      guard(req);
+      const body = await readBody(req);
+      aiLimit(user);
+      try { return await agent.run(String(body.releaseId || ""), "manual", user.name || user.email); } catch (e) { throw e instanceof AgentError ? new HttpError(e.status, e.message) : new HttpError(502, e.message); }
+    },
+    "POST /api/agent/auto": async (req, url, user) => {
+      guard(req);
+      const body = await readBody(req);
+      try { return await agent.setAuto(String(body.releaseId || ""), body.on === true, body.hours); } catch (e) { throw e instanceof AgentError ? new HttpError(e.status, e.message) : e; }
+    },
+    "POST /api/agent/item": async (req, url, user) => {
+      guard(req);
+      const body = await readBody(req);
+      try { await agent.act(String(body.id || ""), String(body.action || ""), body.text, user.name || user.email); } catch (e) { throw e instanceof AgentError ? new HttpError(e.status, e.message) : e; }
+      return agent.inbox();
     },
 
     // AI helpers. They only suggest; the person approves in the planner. The plan comes from the page, so nothing here is saved.

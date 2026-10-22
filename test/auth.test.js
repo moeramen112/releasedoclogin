@@ -252,3 +252,27 @@ test("AI helpers: signed-in editors only; viewers and visitors are refused", asy
   assert.equal((await call("POST", "/api/ai/dependencies", body, viewer)).status, 403);
   assert.equal((await call("POST", "/api/ai/briefing", body, editor)).status, 200);
 });
+
+test("agent: viewers can read the Inbox but not run checks, switch Auto or decide items", async () => {
+  const viewer = await join("viewer", "ag-view@example.com");
+  const editor = await join("editor", "ag-edit@example.com");
+  const { defaultPlan } = await import("../src/plan.js");
+  assert.equal((await call("PUT", "/api/releases/ag-one", { plan: defaultPlan(Date.now()), baseVersion: 0 }, editor)).status, 200);
+  assert.equal((await call("GET", "/api/agent", undefined)).status, 401);
+  assert.equal((await call("GET", "/api/agent", undefined, viewer)).status, 200);
+  assert.equal((await call("GET", "/api/agent?releaseId=ag-one", undefined, viewer)).status, 200);
+  assert.equal((await call("GET", "/api/agent?releaseId=missing", undefined, viewer)).status, 404);
+  for (const [p, b] of [["/api/agent/check", { releaseId: "ag-one" }], ["/api/agent/auto", { releaseId: "ag-one", on: true }], ["/api/agent/item", { id: "x", action: "done" }]]) {
+    assert.equal((await call("POST", p, b, viewer)).status, 403, p);
+  }
+  const r = await call("POST", "/api/agent/check", { releaseId: "ag-one" }, editor);
+  assert.equal(r.status, 200);
+  const v = await r.json();
+  assert.equal(v.run.first, true);
+  assert.ok(v.items.length > 0);
+  const inbox = await (await call("GET", "/api/agent", undefined, viewer)).json();
+  assert.ok(inbox.openCount > 0);
+  assert.equal((await call("POST", "/api/agent/item", { id: v.items[0].id, action: "dismiss" }, editor)).status, 200);
+  assert.equal((await call("POST", "/api/agent/item", { id: v.items[0].id, action: "dismiss" }, editor)).status, 409);
+  assert.equal((await call("POST", "/api/agent/check", { releaseId: "missing" }, editor)).status, 404);
+});

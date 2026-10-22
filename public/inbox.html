@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Inbox</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Schibsted+Grotesk:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <div class="title"><h1>Inbox</h1><div class="sub mono">Drafts the agent prepared. Nothing is sent or changed until you approve it.</div></div>
+      <nav class="nav" aria-label="Pages"><a href="/">Dashboard</a><a href="/plan.html">Planner</a><a href="/inbox.html" data-inbox aria-current="page">Inbox</a></nav>
+    </header>
+    <div class="banner bad" id="err" role="alert" hidden></div>
+    <section class="panel" id="open-box" aria-label="Needs your OK"></section>
+    <section class="panel" id="done-box" aria-label="Recently handled" hidden></section>
+  </div>
+  <script src="/session.js"></script>
+  <script src="/inbox.js"></script>
+</body>
+</html>

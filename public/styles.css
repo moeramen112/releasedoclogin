@@ -302,3 +302,20 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
 #ai-audience { font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); }
 .controls label.autochk { flex: 0 0 auto; flex-direction: row; align-items: center; gap: 6px; text-transform: none; letter-spacing: 0; font-size: 13px; font-weight: 500; color: var(--ink); padding-bottom: 8px; }
 .controls label.autochk input { width: 16px; height: 16px; padding: 0; accent-color: var(--accent); }
+
+/* ---------- agent and inbox ---------- */
+.inbox-item { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--surface-2); }
+.inbox-item.done { opacity: .75; }
+.inbox-item textarea { font: inherit; font-size: 13px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px; width: 100%; resize: vertical; }
+.inbox-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.nav a[data-inbox] { white-space: nowrap; }
+.ag-changes { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; font-size: 13px; }
+.ag-changes .hi { font-weight: 600; }
+.ag-auto { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; }
+.ag-auto select { font: inherit; font-size: 12px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); }
+details.quick > summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+.ag-h { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; margin: 4px 0 0; }
+.ag-preview { white-space: pre-wrap; margin-top: 4px; }
+.panel > p.note { margin: 0; }
+.panel > h3.ag-h { margin-top: 6px; }
+.ai-quick { display: flex; flex-direction: column; gap: 10px; padding-top: 8px; }

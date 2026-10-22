@@ -5,7 +5,7 @@ import { planToSnapshot, planConfig, planState, mergeTickets } from "./plan.js";
 import { buildChangeMessage, sendSlack as realSendSlack } from "./notify.js";
 import { jiraConfigured, fetchJiraRelease as realFetchJira } from "./sources/jira.js";
 
-export function createJobs({ relDb, jobsDb, config, env = process.env, deps = {}, log = () => {} }) {
+export function createJobs({ relDb, jobsDb, config, env = process.env, deps = {}, agent = null, log = () => {} }) {
   const syncMs = Math.max(1, Number(env.SYNC_MINUTES) || 5) * 60_000;
   const settleMs = Math.max(0, env.ALERT_SETTLE_MINUTES === undefined || env.ALERT_SETTLE_MINUTES === "" ? 2 : Number(env.ALERT_SETTLE_MINUTES)) * 60_000;
   const fetchJira = deps.fetchJiraRelease || realFetchJira;
@@ -71,6 +71,7 @@ export function createJobs({ relDb, jobsDb, config, env = process.env, deps = {}
       for (const rec of Object.values(relDb.get().releases)) { // read again: sync may have changed tickets
         if (rec.plan.release?.slackAlerts !== false && env.SLACK_WEBHOOK_URL) await alertOne(rec, now);
       }
+      if (agent) await agent.autoTick(now);
     } finally { running = false; }
   }
 

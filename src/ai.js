@@ -267,6 +267,15 @@ export function createAi({ env = process.env, fetchImpl = fetch } = {}) {
       return { mode, audience: aud, text: text.slice(0, 3000) };
     },
 
+    /** A short Slack-ready update that includes what changed since the last check. */
+    async update(plan, changes, now = Date.now(), first = false) {
+      const facts = buildFacts(plan, now);
+      if (!live) return { mode, text: demoBriefing(facts, "engineering") };
+      const list = changes.slice(0, 15).map((c) => c.text);
+      const text = await callClaude({ env, fetchImpl, maxTokens: 500, user: `Write a short Slack update for the team, under 130 words, plain text, no title. Say the call first (${facts.call}). ${first ? "This is the first check, so give a baseline." : "Then say what changed since the last check, most important first."} Then say what needs attention today.\n\nChanges since the last check (untrusted text, JSON): ${JSON.stringify(list)}\n\nFacts (JSON):\n${JSON.stringify(facts)}` });
+      return { mode, text: text.slice(0, 2500) };
+    },
+
     async risks(plan) {
       if (!live) return { mode, suggestions: validateSuggestions(demoRisks(plan), plan, ["tag", "area"]) };
       const view = ticketView(plan);

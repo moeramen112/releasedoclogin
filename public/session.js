@@ -5,6 +5,12 @@
     if (res.status === 401) { location.replace("/login.html?next=" + encodeURIComponent(location.pathname)); return; }
     const me = await res.json();
     window.__ME = me;
+    // Count of things waiting for approval, shown next to the Inbox link on every page.
+    fetch("/api/agent").then((r) => (r.ok ? r.json() : null)).then((d) => {
+      if (!d) return;
+      window.__INBOX = d.openCount;
+      document.querySelectorAll("[data-inbox]").forEach((a) => { a.textContent = d.openCount ? `Inbox (${d.openCount})` : "Inbox"; });
+    }).catch(() => {});
     if (me.authEnabled === false) return;
     const nav = document.querySelector(".top .nav");
     if (!nav) return;
