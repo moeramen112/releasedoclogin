@@ -302,7 +302,7 @@ flowchart TD
       R["Risk model: score out of 100"]
       D["Dependencies: waiting, chains, handoffs"]
       A["AI helpers and the agent: suggest and draft only"]
-    IN["Inbox: drafts waiting for your OK"]
+      INB["Inbox: drafts waiting for your OK"]
       DB[("Saved releases and users")]
     end
     J --> S
@@ -315,9 +315,9 @@ flowchart TD
     V --> P["Planner and dashboard"]
     V --> SL["Slack alert when the call changes"]
     P --> B["Brief, Word, printable page, status one-pager"]
-    A --> IN
-    IN -. "approved by a person" .-> DB
-    IN -. "approved by a person" .-> SL
+    A --> INB
+    INB -. "approved by a person" .-> DB
+    INB -. "approved by a person" .-> SL
 ```
 
 ```
