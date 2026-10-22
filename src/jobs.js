@@ -1,7 +1,7 @@
 // Background work: pull fresh tickets from Jira and tell Slack when the go/no-go call changes.
 // tick() is plain and takes the clock as an argument, so tests can run it without waiting.
 import { evaluate } from "./engine.js";
-import { planToSnapshot, planConfig, planState, mergeTickets } from "./plan.js";
+import { planToSnapshot, planConfig, planState, mergeTickets, isClosed } from "./plan.js";
 import { buildChangeMessage, sendSlack as realSendSlack } from "./notify.js";
 import { jiraConfigured, fetchJiraRelease as realFetchJira } from "./sources/jira.js";
 
@@ -62,6 +62,7 @@ export function createJobs({ relDb, jobsDb, config, env = process.env, deps = {}
     running = true;
     try {
       for (const rec of Object.values(relDb.get().releases)) {
+        if (isClosed(rec.plan)) continue; // a closed release no longer needs refreshing
         const r = rec.plan.release || {};
         if (r.autoSync && String(r.fixVersion || "").trim() && jiraConfigured(env)) {
           const last = jobsDb.get().releases[rec.id]?.lastSync;
@@ -69,7 +70,7 @@ export function createJobs({ relDb, jobsDb, config, env = process.env, deps = {}
         }
       }
       for (const rec of Object.values(relDb.get().releases)) { // read again: sync may have changed tickets
-        if (rec.plan.release?.slackAlerts !== false && env.SLACK_WEBHOOK_URL) await alertOne(rec, now);
+        if (!isClosed(rec.plan) && rec.plan.release?.slackAlerts !== false && env.SLACK_WEBHOOK_URL) await alertOne(rec, now);
       }
       if (agent) await agent.autoTick(now);
     } finally { running = false; }

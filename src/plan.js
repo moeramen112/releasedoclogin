@@ -31,6 +31,11 @@ export const defaultSettings = () => ({
 });
 
 export const PHASES = ["Pre-release", "Go/no-go", "Deploy", "Verify", "After"];
+
+/** How a release turned out. Empty until someone records it; once set, the release counts as closed. */
+export const OUTCOMES = ["Shipped cleanly", "Shipped with issues", "Rolled back", "Cancelled"];
+export const emptyOutcome = () => ({ status: "", at: "", note: "", snapshot: null });
+export const isClosed = (plan) => Boolean(plan?.outcome?.status);
 export const ROLE_KEYS = [
   ["releaseManager", "Release manager"], ["engOwner", "Engineering owner"], ["qaLead", "QA lead"],
   ["productOwner", "Product owner"], ["sre", "SRE on-call"], ["security", "Security approver"], ["comms", "Comms owner"],
@@ -124,6 +129,7 @@ export function defaultPlan(now = Date.now()) {
     waivers: {},
     settings: defaultSettings(),
     customChecks: [],
+    outcome: emptyOutcome(),
   };
   // Example dependencies, so the page shows how they read.
   const set = (key, patch) => Object.assign(plan.tickets.find((x) => x.key === key), patch);
@@ -206,6 +212,7 @@ export function blankPlan(now = Date.now(), type = "Minor release") {
     signoffs: [], runbook: [], waivers: {},
     settings: defaultSettings(),
     customChecks: [], // { id, name, required, state } checks a person defines and confirms
+    outcome: emptyOutcome(),
   };
   return applyTemplate(plan, type);
 }
@@ -276,6 +283,33 @@ export function generateRunbook(plan) {
   row("After", `Close the Jira fix version ${plan.release.fixVersion || ""}`.trim(), people.releaseManager, shift(D, 1440));
   row("After", "Schedule the post-release review", people.releaseManager, shift(D, 1440));
   return rows;
+}
+
+const HANDOFF_RUN = { "Not started": "todo", "In progress": "doing", Done: "done", Blocked: "blocked" };
+const handoffId = (h) => `${String(h.what || "").trim()}|${h.from || ""}|${h.to || ""}`;
+
+/**
+ * Keep the runbook in step with the handoffs. A handoff that is not Done gets a Pre-release step (owner and time
+ * come from the handoff). A step made earlier follows its handoff's status. Nothing is removed, and steps a person
+ * made by hand are never touched. Returns how many steps were added and how many changed status.
+ */
+export function syncHandoffSteps(plan) {
+  const rows = (plan.runbook ||= []);
+  let n = rows.reduce((m, r) => Math.max(m, Number(String(r.id).replace(/\D/g, "")) || 0), 0);
+  const made = new Map(rows.filter((r) => r.handoff).map((r) => [r.handoff, r]));
+  const fresh = [];
+  let updated = 0;
+  for (const h of plan.handoffs || []) {
+    if (!String(h.what || "").trim()) continue;
+    const id = handoffId(h), status = HANDOFF_RUN[h.status] || "todo", have = made.get(id);
+    if (have) { if (have.status !== status) { have.status = status; updated++; } continue; }
+    if (h.status === "Done") continue; // already handed over, so there is nothing left to do
+    fresh.push({ h, row: { id: `s${++n}`, phase: "Pre-release", step: `Handoff: ${String(h.what).trim()} (${h.from || "?"} to ${h.to || "?"})`, owner: h.owner || plan.people?.releaseManager || "", at: h.due || plan.when?.freezeAt || "", status, handoff: id } });
+  }
+  fresh.sort((a, b) => String(a.row.at).localeCompare(String(b.row.at)));
+  const at = rows.findIndex((r) => r.phase !== "Pre-release"); // keep them with the other pre-release steps
+  rows.splice(at < 0 ? rows.length : at, 0, ...fresh.map((f) => f.row));
+  return { added: fresh.length, updated };
 }
 
 /** Summary the engine's runbook_ready criterion reads. Only pre-release and go/no-go steps can be overdue. */

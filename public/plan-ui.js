@@ -3,9 +3,10 @@
 import { evaluate } from "/engine.js";
 import { computeRisk } from "/risk.js";
 import { analyzeDependencies, parseKeys, TEAMS, HANDOFF_STATUS } from "/deps.js";
-import { mergeTickets, defaultPlan, blankPlan, nextPlan, applyTemplate, generateRunbook, planToSnapshot, planState, planConfig, briefMarkdown, reportModel, reportHtml, reportDocument, reportWord, statusModel, TYPES, PRIORITIES, TICKET_TYPES, STATUSES, AREAS, ENVIRONMENTS, STRATEGIES, CHECK_STATES, PHASES, ROLE_KEYS, TEMPLATES } from "/plan.js";
+import { mergeTickets, defaultPlan, blankPlan, nextPlan, applyTemplate, generateRunbook, syncHandoffSteps, isClosed, OUTCOMES, planToSnapshot, planState, planConfig, briefMarkdown, reportModel, reportHtml, reportDocument, reportWord, statusModel, TYPES, PRIORITIES, TICKET_TYPES, STATUSES, AREAS, ENVIRONMENTS, STRATEGIES, CHECK_STATES, PHASES, ROLE_KEYS, TEMPLATES } from "/plan.js";
 import { $, esc } from "/uikit.js";
-import { renderVerdict, renderRisk, renderPoints, renderDeps, renderCriteria, renderBrief } from "/panels.js";
+import { renderVerdict, renderRisk, renderPoints, renderDeps, renderCriteria, renderBrief, renderHistory } from "/panels.js";
+import { applyOutcomeChange, historyRows, historySummary } from "/history.js";
 import { createAssist } from "/assist.js";
 
 const OLD_KEY = "rr.plan.v1"; // the single plan the first version of the planner saved
@@ -256,6 +257,11 @@ const SECTIONS = [
     { p: "how.dashboards", l: "Dashboards to watch", wide: true },
     { p: "how.verification", l: "Verification steps", t: "textarea", wide: true },
   ] },
+  { id: "after", title: "After the release", hint: "Record how it went. This closes the release: auto-refresh and alerts stop, and it joins Release history.", fields: [
+    { p: "outcome.status", l: "How did it go", t: "select", o: [{ v: "", l: "Not released yet" }, ...OUTCOMES.map((v) => ({ v, l: v }))] },
+    { p: "outcome.at", l: "Closed on", t: "datetime" },
+    { p: "outcome.note", l: "What happened, and what to do differently next time", t: "textarea", wide: true },
+  ] },
 ];
 
 const SIGNAL_GROUPS = [
@@ -334,7 +340,7 @@ const section = (id, title, hint, body, head = "") =>
 
 function renderInputs() {
   addOpen = null;
-  let html = SECTIONS.map((s) => section(s.id, s.title, s.hint, `<div class="fields">${s.fields.map(fieldHtml).join("")}</div>` + (s.id === "who"
+  let html = SECTIONS.filter((s) => s.id !== "after").map((s) => section(s.id, s.title, s.hint, `<div class="fields">${s.fields.map(fieldHtml).join("")}</div>` + (s.id === "who"
     ? `<div id="extra-people" class="extra-people"></div><div id="person-add"></div><div class="row-actions"><button class="btn small" type="button" data-act="add-person">Add person</button><span class="msg">Add a role that is not listed, such as Legal or Support lead.</span></div>` : ""))).join("");
 
   html += section("tickets", "Jira tickets and story points", "Points drive the scope forecast. Bugs at P0 and P1 are treated as blockers until they are done.",
@@ -359,7 +365,10 @@ function renderInputs() {
 
   html += section("runbook", "Runbook", "Prefilled from the dates, owners and rollout strategy above. Edit any row.",
     `<div class="tablewrap"><table class="tbl" style="min-width:760px"><thead><tr><th>Phase</th><th>Step</th><th>Owner</th><th>When</th><th>Status</th><th></th></tr></thead><tbody id="runbook-body"></tbody></table></div>
-     <div class="row-actions"><button class="btn small" type="button" data-act="add-step">Add step</button><button class="btn small" type="button" data-act="regen-runbook">Regenerate from plan</button><span id="rb-clear"></span><span class="msg" id="rb-msg">Regenerating replaces your edits to these rows.</span></div>`);
+     <div class="row-actions"><button class="btn small" type="button" data-act="add-step">Add step</button><button class="btn small" type="button" data-act="handoff-steps" title="Adds a step for each handoff that is not done, and updates the ones it added before">Add steps from handoffs</button><button class="btn small" type="button" data-act="regen-runbook">Regenerate from plan</button><span id="rb-clear"></span><span class="msg" id="rb-msg">Regenerating replaces your edits to these rows.</span></div>`);
+
+  const after = SECTIONS.find((s) => s.id === "after");
+  html += section(after.id, after.title, after.hint, `<div class="fields">${after.fields.map(fieldHtml).join("")}</div>`);
 
   html += `<datalist id="people-list"></datalist>`;
   $("#inputs").innerHTML = html;
@@ -582,9 +591,10 @@ function renderResults() {
   if (remote && integrations.server && AG.forId !== lib.current) agentLoad();
   const fresh = !P.release.name.trim() && P.tickets.length === 0 && !Number(P.signals.ci.total);
   const roNote = READONLY ? `<div class="banner"><strong>View only.</strong><span>This is an example release with invented names and numbers. You can look at everything, but nothing can be changed or saved.</span></div>` : "";
-  const note = roNote + (fresh ? `<div class="banner"><strong>New release.</strong><span>Name it and set the dates on the left, then add tickets or pull them from Jira. The call stays HOLD until the checks have data, and anything unknown counts as risk.</span></div>` : "");
+  const closedNote = isClosed(P) ? `<div class="banner"><strong>Closed: ${esc(P.outcome.status)}.</strong><span>Auto-refresh and alerts are off for this release. Clear the outcome under After the release to reopen it.</span></div>` : "";
+  const note = roNote + closedNote + (fresh ? `<div class="banner"><strong>New release.</strong><span>Name it and set the dates on the left, then add tickets or pull them from Jira. The call stays HOLD until the checks have data, and anything unknown counts as risk.</span></div>` : "");
   renderRelSelect();
-  $("#results").innerHTML = note + renderVerdict(last) + renderAgent() + renderRisk(last) + renderPoints(last) + renderDeps(last) + renderCriteria(last, { P, openWaive, waiveError }) + renderBrief(last, { STANDALONE });
+  $("#results").innerHTML = note + renderVerdict(last) + renderAgent() + renderRisk(last) + renderPoints(last) + renderDeps(last) + renderCriteria(last, { P, openWaive, waiveError }) + renderBrief(last, { STANDALONE }) + renderHistory(historyRows(lib.order.map((id) => ({ ...(id === lib.current ? P : lib.items[id]), id }))), historySummary(historyRows(lib.order.map((id) => ({ ...(id === lib.current ? P : lib.items[id]), id })))), lib.current);
   const p = last.risk.points;
   const sum = $("#tk-sum");
   if (sum) sum.textContent = `${p.tickets} tickets · ${p.total} points · ${p.done} done`;
@@ -621,6 +631,7 @@ function onEdit(e) {
     setPath(P, el.dataset.p, el.value);
   }
   if (/^(people|extraPeople)\./.test(el.dataset.p)) renderPeopleList();
+  if (el.dataset.p === "outcome.status" && applyOutcomeChange(P, Date.now())) { const at = $("#f-outcome-at"); if (at) at.value = P.outcome.at || ""; }
   changed();
 }
 document.addEventListener("input", onEdit);
@@ -731,6 +742,12 @@ document.addEventListener("click", async (e) => {
   else if (act === "del-handoff") { P.handoffs.splice(i, 1); renderHandoffs(); changed(); }
   else if (act === "add-step") { P.runbook.push({ id: "s" + Date.now(), phase: "Deploy", step: "", owner: P.people.releaseManager, at: P.when.deployAt, status: "todo" }); renderRunbook(); changed(); }
   else if (act === "del-step") { P.runbook.splice(i, 1); renderRunbook(); changed(); }
+  else if (act === "handoff-steps") {
+    const r = syncHandoffSteps(P);
+    renderRunbook(); changed();
+    say("rb-msg", r.added || r.updated ? `${r.added} step${r.added === 1 ? "" : "s"} added, ${r.updated} updated from the handoffs.` : "The runbook already matches the handoffs.", "ok");
+  }
+  else if (act === "open-release") { openRelease(a.dataset.id); sayRel("Opened from Release history.", false, "ok"); }
   else if (act === "regen-runbook") { P.runbook = generateRunbook(P); renderRunbook(); changed(); say("rb-msg", "Runbook regenerated from the plan.", "ok"); }
   else if (act === "apply-template") {
     applyTemplate(P, P.release.type); renderInputs(); changed();
@@ -813,6 +830,7 @@ document.addEventListener("click", async (e) => {
   else if (act === "rel-dup") {
     const c = JSON.parse(JSON.stringify(P));
     c.release.name = `Copy of ${P.release.name || "Untitled release"}`;
+    c.outcome = { status: "", at: "", note: "", snapshot: null }; // a copy starts open
     addRelease(c);
     sayRel("Duplicated. Changes here do not affect the original.", false, "ok");
   }
