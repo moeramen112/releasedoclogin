@@ -26,7 +26,8 @@ Before a release, someone collects status by hand from the issue tracker, CI, th
 - the same go/no-go call, using the same engine
 - a risk score out of 100 with a breakdown by factor, plain-language recommendations, and a suggested staged rollout
 - a story-point forecast: points done, points remaining, and whether the team's velocity can finish before the freeze
-- a runbook, prefilled from the dates, owners and rollout strategy
+- a runbook, prefilled from the dates, owners and rollout strategy, with one click to add a step for each open handoff
+- release history: record how each release went, and see how past calls held up against what happened
 - a dependency view: what is waiting on what, what to finish first, and which handoffs between teams are late
 - an **agent**: press Check this release and it tells you what changed since the last check, then drafts a Slack update, chase notes for late handoffs and suggestions, all waiting in an Inbox for your OK
 - a release brief in Markdown (who, what, when, where, how, dependencies, risk, criteria, runbook) to paste into Slack or Confluence
@@ -95,6 +96,29 @@ Pick a release from the list at the top to switch. Each release shows its curren
 Releases are saved on the server, so everyone signed in sees the same list. The page checks for changes by other people every 20 seconds and never replaces what you are typing. **Export plan** and **Import** still work for backups and for moving a release between servers. The single-file copy saves in the browser only.
 
 Per-release criteria are already supported by the engine: a release can switch a criterion off, make it advisory, or add its own checks that a person confirms. There is no screen for it yet, so today that is set in the plan file.
+
+## Runbook steps from handoffs
+
+Under **Runbook**, press **Add steps from handoffs**. Each handoff that is not Done gets a Pre-release step: "Handoff: Android 14 test devices (DevOps to QA)", with the handoff's owner and due date. Steps sit with the other pre-release steps, earliest due first.
+
+- Press it again later and the steps it made follow their handoff: In progress becomes doing, Blocked becomes blocked, Done becomes done. Nothing is removed, and steps you wrote yourself are never touched.
+- A handoff that is already Done gets no step. A handoff with no owner falls back to the release manager.
+- A step that is past its time and not done counts toward the "Pre-release steps on schedule" check, like any other pre-release step.
+- **Regenerate from plan** still replaces every step, so press **Add steps from handoffs** again after it.
+- Steps are matched by the handoff's text, From and To. If you rename a handoff, the old step stays and a new one is added; delete the old one by hand.
+
+![The runbook, with the Add steps from handoffs button](docs/runbook-handoffs.png)
+
+## Release history
+
+When a release is done, open the last section on the left, **After the release**, and pick how it went: shipped cleanly, shipped with issues, rolled back, or cancelled. Add a note about what happened and what to change next time.
+
+- Picking an outcome **closes** the release. The tool saves the call and risk score as they were at that moment, and fills in the closing time if it is empty.
+- A closed release stops auto-refreshing from Jira, stops sending Slack alerts, and is skipped by Auto checks. Clear the outcome to reopen it.
+- The **Release history** panel at the bottom of the results lists every closed release, newest first, with a counts line and how each call held up: for example "NO-GO at close: 1 shipped, 1 had issues or were rolled back". The line "N shipped while the call was HOLD or NO-GO" is the one to look at.
+- **Duplicate** and **Start next release** always begin open.
+
+![Release history: outcome counts, how the call held up, and each closed release](docs/history.png)
 
 ## Release docs
 
@@ -362,7 +386,8 @@ Levels: under 25 Low, under 50 Moderate, under 75 High, otherwise Critical. Each
 src/engine.js      criteria evaluators, waivers, verdict (pure)
 src/risk.js        story points, forecast, risk score (pure)
 src/deps.js        what waits on what: blockers, handoffs, cycles, chains (pure)
-src/plan.js        the plan, templates, runbook generator, brief (pure)
+src/plan.js        the plan, templates, runbook generator and handoff steps, brief (pure)
+src/history.js     release history: the call when closed, rows and summary (pure)
 src/sources/       GitHub, Jira, and demo-data adapters
 src/server.js      HTTP server and JSON API
 src/auth.js        accounts, sessions, invites, roles (no dependencies)
@@ -371,7 +396,8 @@ src/agent.js       the agent: what changed since the last check, and the drafts 
 src/agent-service.js  runs the agent, keeps the Inbox, applies your decisions
 src/jobs.js        the timer: Jira auto-refresh, Slack alerts, Auto checks
 public/            dashboard, planner, inbox, sign-in, people (plain JS, no build step)
-test/              132 tests, including a mock GitHub, a mock Jira, a mock Slack and a mock AI service
+public/plan-ui.js  the planner page; panels.js, assist.js and uikit.js hold the result panels, the AI and agent panel, and shared helpers
+test/              143 tests, including a mock GitHub, a mock Jira, a mock Slack and a mock AI service
 scripts/           build-standalone.mjs makes the single-file planner
 ```
 
@@ -393,10 +419,9 @@ scripts/           build-standalone.mjs makes the single-file planner
 
 1. Read CI status from the CI provider directly, and map it to the release branch automatically.
 2. Learn the weights from history: which factors preceded a rollback or an incident.
-3. Release history: record how each release went, and show trends.
-4. Runbook steps generated from handoffs.
-5. Let the agent read Jira descriptions and comments, and email chase notes with approval.
-6. Per-team criteria sets.
+3. Trends over time in Release history (for example risk against outcome, by month), and learning the weights from it.
+4. Let the agent read Jira descriptions and comments, and email chase notes with approval.
+5. Per-team criteria sets.
 
 ## Demo script (three minutes)
 

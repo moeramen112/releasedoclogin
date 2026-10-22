@@ -1,6 +1,7 @@
 // Runs the agent on stored releases and keeps the Inbox. The routes and the timer both call this one thing.
 import { checkRelease, newItem, trimInbox } from "./agent.js";
 import { sendSlack as realSendSlack } from "./notify.js";
+import { isClosed } from "./plan.js";
 
 const HOURS = [1, 4, 12, 24];
 const strip = (run) => (run ? { at: run.at, by: run.by, source: run.source, first: run.first, quiet: run.quiet, changes: run.changes, created: run.items } : null);
@@ -100,7 +101,7 @@ export function createAgentService({ relDb, agentDb, ai, env = process.env, deps
     const s = agentDb.get();
     for (const [id, a] of Object.entries(s.auto)) {
       if (!a.on) continue;
-      if (!relDb.get().releases[id]) continue;
+      if (!relDb.get().releases[id] || isClosed(relDb.get().releases[id].plan)) continue;
       const last = s.runs[id]?.at;
       if (last !== undefined && now - last < (a.hours || 4) * 3_600_000) continue;
       const day = new Date(now).toISOString().slice(0, 10);
