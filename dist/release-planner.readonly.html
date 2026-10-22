@@ -304,6 +304,8 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
 .ai-item > div:first-child { flex: 1 1 220px; min-width: 0; }
 .ai-brief .panel-head h3 { font-size: 13px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 #ai-audience { font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); }
+.controls label.autochk { flex: 0 0 auto; flex-direction: row; align-items: center; gap: 6px; text-transform: none; letter-spacing: 0; font-size: 13px; font-weight: 500; color: var(--ink); padding-bottom: 8px; }
+.controls label.autochk input { width: 16px; height: 16px; padding: 0; accent-color: var(--accent); }
 
 </style>
 <div class="wrap">
@@ -1781,8 +1783,8 @@ const SECTIONS = [
     { p: "release.version", l: "Version", mono: true, ph: "4.13.0" },
     { p: "release.type", l: "Release type", t: "select", o: opt(TYPES), after: "tpl" },
     { p: "release.fixVersion", l: "Jira fix version", mono: true, ph: "4.13" },
-    { p: "release.autoSync", l: "Refresh from Jira every few minutes (server does it, even when nobody has this page open)", t: "check", wide: true },
-    { p: "release.slackAlerts", l: "Post to Slack when the go/no-go call changes", t: "check", wide: true },
+    { p: "release.autoSync", l: "Auto-refresh from Jira", t: "check", wide: true },
+    { p: "release.slackAlerts", l: "Slack alert on call change", t: "check", wide: true },
     { p: "release.summary", l: "What changes", t: "textarea", wide: true },
     { p: "release.customerImpact", l: "Customer impact", t: "textarea", wide: true },
   ] },

@@ -25,6 +25,27 @@ Before a release, someone collects status by hand from the issue tracker, CI, th
 
 ![Planner](docs/planner.png)
 
+It works on a phone too:
+
+<img src="docs/mobile.png" alt="Planner on a phone" width="320">
+
+<details>
+<summary>More screens</summary>
+
+The risk analysis, with a score out of 100 and the reason behind each factor:
+
+![Risk analysis](docs/risk.png)
+
+The ticket table, with team, blocked-by and migration columns:
+
+![Tickets](docs/tickets.png)
+
+The full printable release report (Word and PDF versions look the same):
+
+![Release report](docs/release-report.png)
+
+</details>
+
 ## Dependencies: what waits on what
 
 Some work cannot start until other work is done: the frontend waits for the backend, QA waits for the merge, tickets cannot be written until the designs are handed over. Two things in the planner capture this.
@@ -43,6 +64,10 @@ From that the planner shows, in a Dependencies panel and in the release brief:
 - **circular dependencies**, where tickets wait on each other so none can start
 
 It adds a **Dependencies clear** check to go/no-go (advisory by default; a release can make it required) and a Dependencies factor to the risk score. A blocker that is not in this release's ticket list counts as unresolved, and the Blocked by box is highlighted. **Pull from Jira** fills Blocked by from Jira "is blocked by" links, and **Refresh from Jira** keeps what you typed. I tested the Jira links against a mock, not a live Jira.
+
+![Dependencies panel: longest chain, what to finish first, who is waiting, overdue handoffs](docs/dependencies.png)
+
+![Handoffs between teams, with owner, due date and status](docs/handoffs.png)
 
 ## Using it for every release
 
@@ -66,6 +91,8 @@ Per-release criteria are already supported by the engine: a release can switch a
 ## Sign-in, roles and privacy
 
 ![People page, where admins invite people and set roles](docs/people.png)
+
+![Sign-in page](docs/signin.png)
 
 **Invite only.** There is no sign-up page. An admin adds an email and a role, and the person gets a one-time link to choose their own password. The link works once and expires in 7 days.
 
@@ -145,6 +172,34 @@ Copy `.env.example` and set what you have. Everything is optional.
 Edit `readiness.config.json` to change the repository, release branch, label names, JQL, the Jira story-points field (`customfield_10016` on most sites, but it varies), and the list of criteria.
 
 ## How it works
+
+
+```mermaid
+flowchart TD
+    subgraph Sources
+      J["Jira: tickets, points, blocked-by links"]
+      G["GitHub: PRs, checks, compare"]
+    end
+    subgraph Server
+      S["Auto-refresh job, every few minutes"]
+      E["Engine: criteria and waivers"]
+      R["Risk model: score out of 100"]
+      D["Dependencies: waiting, chains, handoffs"]
+      A["AI helpers: suggest only"]
+      DB[("Saved releases and users")]
+    end
+    J --> S
+    S --> DB
+    G --> E
+    DB --> E
+    D --> E
+    E --> V{"GO, HOLD or NO-GO"}
+    R --> V
+    V --> P["Planner and dashboard"]
+    V --> SL["Slack alert when the call changes"]
+    P --> B["Brief, Word, printable page, status one-pager"]
+    A -. "approved by a person" .-> DB
+```
 
 ```
 GitHub ─┐
@@ -247,6 +302,12 @@ In the planner, the **Release brief** panel has:
 - **Status one-pager**: just the call, dates and risks, for leadership.
 - **.md** and **Copy Markdown**: plain text.
 
+![Release brief panel with Copy for Docs, Word, Printable page and Status one-pager](docs/release-docs.png)
+
+The one-page status for leadership:
+
+![Status one-pager: the call, what is holding the release, dates, risks and what to do](docs/status-onepager.png)
+
 ## Putting it online
 
 See `HOSTING.md` for step-by-step setup on Render (a `Dockerfile` and `render.yaml` are included, so Railway and Fly.io work too). If you miss the first admin link, set `RESEND_ADMIN_LINK=1` and restart to get a new one.
@@ -267,3 +328,29 @@ How it behaves:
 - **What Claude sees.** For the status update: the release name, summary, dates, the call and why, the top risks, counts, the release manager's name, and which tickets wait on what. For the two finders: ticket keys, titles, type, priority, status, area, team and blocked-by. It does not see emails, passwords, Jira tokens or the people list. Ticket titles do leave your server in live mode, so check that is allowed where you work.
 - **Safety.** Ticket text is treated as data, not instructions. Suggestions are checked before you see them: made-up tickets, unknown teams and repeats are dropped. Editors and admins only. Each person is limited to 30 requests an hour (`AI_PER_HOUR`).
 - **Not yet tried against the real API.** Live mode is tested with a stand-in service. Try it with a real key and a small test release first.
+
+![AI helpers: a team update, plus suggested teams and a handoff, each with Apply and Dismiss](docs/ai-helpers.png)
+
+The same panel, writing for leadership:
+
+![Leadership update from the AI helpers panel](docs/ai-leadership.png)
+
+How the helpers stay safe:
+
+```mermaid
+flowchart LR
+    A["Release plan"] --> B{"AI key set?"}
+    B -- no --> C["Demo mode: simple rules, nothing leaves the server"]
+    B -- yes --> D["Claude reads facts and ticket titles"]
+    C --> E["Suggestions"]
+    D --> E
+    E --> F["Checked: real tickets, known teams, no repeats"]
+    F --> G["Shown with a reason and a confidence"]
+    G --> H{"Person decides"}
+    H -- Apply --> I["Plan changes"]
+    H -- Dismiss --> J["Nothing changes"]
+    I --> K["Rules in the engine"]
+    K --> L["GO, HOLD or NO-GO"]
+```
+
+The go/no-go call comes only from the rules on the right. The AI can change what the rules see only when a person presses Apply.
