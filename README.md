@@ -419,7 +419,7 @@ scripts/           build-standalone.mjs makes the single-file planner
 
 1. Read CI status from the CI provider directly, and map it to the release branch automatically.
 2. Learn the weights from history: which factors preceded a rollback or an incident.
-3. Trends over time in Release history (for example risk against outcome, by month), and learning the weights from it.
+3. Trends over time in Release history (for example risk against outcome, by month).
 4. Let the agent read Jira descriptions and comments, and email chase notes with approval.
 5. Per-team criteria sets.
 
