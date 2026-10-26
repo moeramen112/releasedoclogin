@@ -227,6 +227,9 @@ export function validateSuggestions(raw, plan, allowed) {
 
 const MAX_CLASHES = 8;
 
+/** The go/no-go call of one release, or "" when its plan is too incomplete to evaluate. One bad plan must not stop the check for the rest. */
+const safeCall = (p, now) => { try { return buildFacts(p, now).call; } catch { return ""; } };
+
 /** Facts for the schedule check. Only clashes, the releases in them, and free slots from schedule.js. */
 export function buildScheduleFacts(plans, now = Date.now(), rules) {
   const schedule = buildSchedule(plans, { now, rules });
@@ -241,7 +244,7 @@ export function buildScheduleFacts(plans, now = Date.now(), rules) {
     id: c.id, severity: c.severity, text: clip(c.texts.join(" "), 500),
     releases: c.releases.map((r) => {
       const p = byId.get(r.id);
-      return { id: r.id, name: clip(r.name, 80), call: p ? buildFacts(p, now).call : "", freeSlots: suggestSlots(plans, r.id, { now, rules, count: 3 }).map((x) => x.local) };
+      return { id: r.id, name: clip(r.name, 80), call: p ? safeCall(p, now) : "", freeSlots: suggestSlots(plans, r.id, { now, rules, count: 3 }).map((x) => x.local) };
     }),
   }));
   return { clashes, total: pairs.size };

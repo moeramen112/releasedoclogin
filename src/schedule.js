@@ -14,6 +14,7 @@ import { fmtLocal, isClosed } from "./plan.js";
 
 export const HOUR = 3_600_000;
 export const DAY = 86_400_000;
+const MAX_WINDOW_HOURS = 168; // a deploy window longer than a week is a typo; use the 2-hour default instead of clashing with everything
 
 export const DEFAULT_RULES = {
   bufferHours: 12,          // two deploys closer than this are "too close"
@@ -38,7 +39,7 @@ export function toItem(plan, id = plan?.id) {
   const when = plan?.when || {};
   const start = parseLocal(when.deployAt);
   const hours = Number(when.windowHours);
-  const end = start === null ? null : start + (Number.isFinite(hours) && hours > 0 ? hours : 2) * HOUR;
+  const end = start === null ? null : start + (Number.isFinite(hours) && hours > 0 && hours <= MAX_WINDOW_HOURS ? hours : 2) * HOUR;
   return {
     id: String(id ?? ""),
     name: clip(plan?.release?.name, 80) || "Untitled release",

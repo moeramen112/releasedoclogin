@@ -153,3 +153,10 @@ test("clashesBetween works on two items directly and the example release alone h
   const ex = defaultPlan(NOW); ex.id = "ex";
   assert.deepEqual(buildSchedule([ex], { now: NOW }).conflicts, []);
 });
+
+test("a deploy window of absurd length is treated as the 2-hour default", () => {
+  const typo = rel("a", "Typo", { deploy: "2026-10-28T02:00", hours: 100000 });
+  const other = rel("b", "Other", { deploy: "2026-11-20T02:00" });
+  assert.equal(buildSchedule([typo, other], { now: NOW }).conflicts.length, 0);
+  assert.equal(toItem(typo).end - toItem(typo).start, 2 * 3_600_000);
+});
