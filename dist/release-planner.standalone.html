@@ -907,7 +907,7 @@ const LEVELS = [
   { name: "High", below: 75 },
   { name: "Critical", below: 101 },
 ];
-const levelFor = (score) => LEVELS.find((l) => score < l.below).name;
+const levelFor = (score) => (LEVELS.find((l) => score < l.below) || LEVELS[LEVELS.length - 1]).name; // a score that is not a number reads as the worst level, never as a crash
 
 /** Staged rollout suggestion, tighter as risk goes up. */
 function rolloutLadder(level) {
@@ -1066,6 +1066,7 @@ const __mod_plan = (() => {
 
 const { num, parseLocal, summarizePoints, DONE } = __mod_risk;
 const { analyzeDependencies } = __mod_deps;
+const MAX_COUNT = 5000;
 const TYPES = ["Major release", "Minor release", "Patch", "Hotfix"];
 const PRIORITIES = ["P0", "P1", "P2", "P3"];
 const TICKET_TYPES = ["Story", "Bug", "Task"];
@@ -1285,6 +1286,48 @@ function blankPlan(now = Date.now(), type = "Minor release") {
   return applyTemplate(plan, type);
 }
 
+const ROW_SHAPES = {
+  tickets: { key: "text", summary: "text", type: "text", priority: "text", points: "number", status: "text", assignee: "text", area: "text", team: "text", blockedBy: "text" },
+  handoffs: { what: "text", from: "text", to: "text", owner: "text", due: "text", status: "text", blocks: "text" },
+  raid: { id: "text", type: "text", title: "text", owner: "text", due: "text", status: "text", rating: "text", response: "text", source: "text" },
+  signoffs: { role: "text", who: "text", approved: "flag" },
+  runbook: { id: "text", phase: "text", step: "text", owner: "text", at: "text", status: "text" },
+};
+
+/**
+ * A plan with every section present. A plan saved through the API (or by an older version) can lack whole
+ * sections; the server fills the gaps before it analyses one, so nothing downstream has to guess.
+ * Nothing is invented that a person would notice: no dates, no runbook steps, no tickets.
+ */
+function completePlan(plan) {
+  const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
+  const fill = (base, v) => {
+    if (Array.isArray(base)) return Array.isArray(v) ? v : [];
+    if (isObj(base)) { const src = isObj(v) ? v : {}; const out = { ...src }; for (const k of Object.keys(base)) out[k] = fill(base[k], src[k]); return out; }
+    return v === undefined || v === null ? base : v;
+  };
+  const base = blankPlan(0);
+  base.when = { freezeAt: "", meetingAt: "", deployAt: "", windowHours: 2 };
+  base.runbook = []; base.signoffs = []; base.customChecks = [];
+  const out = fill(base, plan);
+  for (const k of ["tickets", "handoffs", "raid", "signoffs", "runbook", "customChecks", "extraPeople"]) out[k] = out[k].filter(isObj);
+  // A field that is present must be the kind of value the screens expect (text where there is text), or one bad cell stops the page.
+  for (const [k, shape] of Object.entries(ROW_SHAPES)) {
+    out[k] = out[k].map((row) => {
+      const r = { ...row };
+      for (const [f, kind] of Object.entries(shape)) {
+        if (!(f in r)) continue;
+        const v = r[f];
+        if (kind === "text") r[f] = v == null || typeof v === "object" ? "" : String(v);
+        else if (kind === "number") r[f] = Number.isFinite(Number(v)) && v !== "" && v !== null && typeof v !== "object" ? Number(v) : 0;
+        else r[f] = Boolean(v);
+      }
+      return r;
+    });
+  }
+  return out;
+}
+
 /**
  * The next release in a series: keeps what rarely changes (people, repository, environments, rollout and
  * rollback settings, budgets, which sign-offs are needed) and clears what belongs to one release
@@ -1402,11 +1445,12 @@ function planToSnapshot(plan, now = Date.now()) {
     .map((x) => ({ key: x.key, sev: x.priority, title: x.summary, owner: x.assignee || "Unassigned", ageDays: 0, status: x.status, source: "jira" }));
 
   const real = String(s.ci.realFailures || "").split("\n").map((x) => x.trim()).filter(Boolean);
-  const flaky = Array.from({ length: Math.max(0, num(s.ci.flaky)) }, (_, i) => `flaky check ${i + 1} (quarantine)`);
-  const pending = Array.from({ length: Math.max(0, num(s.ci.pending)) }, (_, i) => `pending check ${i + 1}`);
+  const count = (v) => Math.min(MAX_COUNT, Math.max(0, Math.floor(num(v)))); // a typo like 99999999 must not build millions of rows
+  const flaky = Array.from({ length: count(s.ci.flaky) }, (_, i) => `flaky check ${i + 1} (quarantine)`);
+  const pending = Array.from({ length: count(s.ci.pending) }, (_, i) => `pending check ${i + 1}`);
   const total = Math.max(num(s.ci.total), real.length + flaky.length + pending.length);
 
-  const mergedTotal = Math.max(0, num(s.mergedTotal));
+  const mergedTotal = count(s.mergedTotal);
   const late = Math.min(mergedTotal, Math.max(0, num(s.lateMerged)));
   const unapproved = Math.min(mergedTotal, Math.max(0, num(s.mergedUnapproved)));
   const mergedPrs = Array.from({ length: mergedTotal }, (_, i) => ({
@@ -1415,7 +1459,7 @@ function planToSnapshot(plan, now = Date.now()) {
     approved: i >= unapproved,
   }));
 
-  const openPrs = Array.from({ length: Math.max(0, num(s.openPrs)) }, (_, i) => ({
+  const openPrs = Array.from({ length: count(s.openPrs) }, (_, i) => ({
     number: i + 1, checks: i < num(s.failingOpenPrs) ? "failing" : "passing",
   }));
 
@@ -1654,7 +1698,7 @@ function statusModel(m) {
 /** The report as Markdown. Kept under its original name for existing callers. */
 const briefMarkdown = (plan, result, risk, now = Date.now()) => reportMarkdown(reportModel(plan, result, risk, now));
 
-return { TYPES, PRIORITIES, TICKET_TYPES, STATUSES, AREAS, ENVIRONMENTS, STRATEGIES, CHECK_STATES, defaultSettings, PHASES, OUTCOMES, emptyOutcome, isClosed, ROLE_KEYS, TEMPLATES, fmtLocal, defaultPlan, mergeTickets, applyTemplate, blankPlan, nextPlan, generateRunbook, syncHandoffSteps, runbookStatus, planToSnapshot, planState, planConfig, reportModel, reportMarkdown, reportHtml, reportDocument, reportWord, statusModel, briefMarkdown };
+return { TYPES, PRIORITIES, TICKET_TYPES, STATUSES, AREAS, ENVIRONMENTS, STRATEGIES, CHECK_STATES, defaultSettings, PHASES, OUTCOMES, emptyOutcome, isClosed, ROLE_KEYS, TEMPLATES, fmtLocal, defaultPlan, mergeTickets, applyTemplate, blankPlan, completePlan, nextPlan, generateRunbook, syncHandoffSteps, runbookStatus, planToSnapshot, planState, planConfig, reportModel, reportMarkdown, reportHtml, reportDocument, reportWord, statusModel, briefMarkdown };
 })();
 const __mod_history = (() => {
 // Release history: what the call and risk were when a release was closed, and how it turned out.
@@ -2484,7 +2528,7 @@ window.__STANDALONE = true;
 const { evaluate } = __mod_engine;
 const { computeRisk } = __mod_risk;
 const { analyzeDependencies, parseKeys, TEAMS, HANDOFF_STATUS } = __mod_deps;
-const { mergeTickets, defaultPlan, blankPlan, nextPlan, applyTemplate, generateRunbook, syncHandoffSteps, isClosed, OUTCOMES, planToSnapshot, planState, planConfig, briefMarkdown, reportModel, reportHtml, reportDocument, reportWord, statusModel, TYPES, PRIORITIES, TICKET_TYPES, STATUSES, AREAS, ENVIRONMENTS, STRATEGIES, CHECK_STATES, PHASES, ROLE_KEYS, TEMPLATES } = __mod_plan;
+const { mergeTickets, completePlan, defaultPlan, blankPlan, nextPlan, applyTemplate, generateRunbook, syncHandoffSteps, isClosed, OUTCOMES, planToSnapshot, planState, planConfig, briefMarkdown, reportModel, reportHtml, reportDocument, reportWord, statusModel, TYPES, PRIORITIES, TICKET_TYPES, STATUSES, AREAS, ENVIRONMENTS, STRATEGIES, CHECK_STATES, PHASES, ROLE_KEYS, TEMPLATES } = __mod_plan;
 const { $, esc } = __mod_uikit;
 const { renderVerdict, renderRisk, renderPoints, renderDeps, renderCriteria, renderBrief, renderHistory, renderRaid } = __mod_panels;
 const { RAID_TYPES, RAID_STATUS, RAID_RATINGS, emptyRaid, summarizeRaid, isOverdue, isClosedRaid, suggestRaid, acceptSuggestion } = __mod_raid;
@@ -2510,8 +2554,10 @@ const getPath = (o, p) => p.split(".").reduce((a, k) => (a == null ? a : a[k]), 
 function setPath(o, p, v) {
   const keys = p.split(".");
   const last = keys.pop();
-  const target = keys.reduce((a, k) => a[k], o);
+  const target = keys.reduce((a, k) => (a == null ? a : a[k]), o);
+  if (target == null || typeof target !== "object") return false; // the row is gone, so there is nothing to change
   target[last] = v;
+  return true;
 }
 function fillDefaults(def, val) {
   if (Array.isArray(def) || typeof def !== "object" || def === null) return val === undefined ? def : val;
@@ -2525,6 +2571,7 @@ function fillDefaults(def, val) {
 const newId = () => "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 // What a saved plan is filled in from. Handoffs start empty, so an older plan never picks up the example's.
 const FILL = () => ({ ...defaultPlan(), handoffs: [], raid: [] });
+const tidy = (p) => completePlan(fillDefaults(FILL(), p)); // defaults for what is missing, and no junk rows, so a damaged save cannot stop the page loading
 const validPlan = (p) => Boolean(p && Array.isArray(p.tickets) && p.release);
 
 function loadLib() {
@@ -2536,14 +2583,14 @@ function loadLib() {
       const order = (l.order || []).filter((id) => validPlan(l.items?.[id]));
       if (order.length) {
         const items = {};
-        for (const id of order) items[id] = { ...fillDefaults(FILL(), l.items[id]), id };
+        for (const id of order) items[id] = { ...tidy(l.items[id]), id };
         return { current: items[l.current] ? l.current : order[0], order, items };
       }
     }
     const old = store.get(OLD_KEY); // keep whatever the first version saved
     if (old) {
       const p = JSON.parse(old);
-      if (validPlan(p)) { const id = newId(); return { current: id, order: [id], items: { [id]: { ...fillDefaults(FILL(), p), id } } }; }
+      if (validPlan(p)) { const id = newId(); return { current: id, order: [id], items: { [id]: { ...tidy(p), id } } }; }
     }
   } catch { /* fall through to the example */ }
   const id = newId();
@@ -2628,7 +2675,7 @@ function showConflict(message) {
   el.innerHTML = `${esc(message || "Someone else changed this release.")} Your edits here are <strong>not saved</strong>. <button class="btn small" type="button" data-act="conflict-load">Load their version</button> <button class="btn small" type="button" data-act="conflict-copy">Keep mine as a copy</button>`;
 }
 
-const fromServer = (r) => ({ ...fillDefaults(FILL(), r.plan), id: r.id });
+const fromServer = (r) => ({ ...tidy(r.plan), id: r.id });
 function adopt(r) {
   const plan = fromServer(r);
   lib.items[r.id] = plan;
@@ -3139,7 +3186,9 @@ function changed() {
 
 function onEdit(e) {
   const el = e.target.closest("[data-p]");
-  if (!el) return;
+  if (!el || !el.isConnected) return; // a field that was just redrawn can still fire a late change; it must not write into the new release
+  const parent = el.dataset.p.split(".").slice(0, -1).reduce((a, k) => (a == null ? a : a[k]), P);
+  if (parent == null || typeof parent !== "object") return;
   if (el.dataset.multi) {
     setPath(P, el.dataset.p, [...document.querySelectorAll(`[data-multi][data-p="${el.dataset.p}"]:checked`)].map((x) => x.value));
   } else if (el.type === "radio") {
@@ -3451,7 +3500,7 @@ $("#import-file").addEventListener("change", async (e) => {
   try {
     const p = JSON.parse(await file.text());
     if (!p || !Array.isArray(p.tickets) || !p.release) throw new Error("That file is not a release plan.");
-    addRelease(fillDefaults(FILL(), p));
+    addRelease(tidy(p));
     sayRel(`Imported “${P.release.name || "Untitled release"}” as a new release.`, false, "ok");
   } catch (err) {
     $("#results").insertAdjacentHTML("afterbegin", `<div class="banner bad" role="alert"><strong>Could not import.</strong><span>${esc(err.message)}</span></div>`);

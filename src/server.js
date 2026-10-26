@@ -2,6 +2,7 @@
 // Tokens stay on the server. The browser never sees them.
 
 import http from "node:http";
+import { completePlan } from "./plan.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -117,8 +118,11 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
       if (size > limit) throw new HttpError(413, "Request body too large.");
       chunks.push(c);
     }
-    try { return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {}; }
+    let body;
+    try { body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {}; }
     catch { throw new HttpError(400, "Body must be JSON."); }
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "Body must be a JSON object.");
+    return body;
   }
 
   // Mutating routes need a custom header and a same-origin request, which blocks
@@ -126,7 +130,11 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
   function guard(req) {
     if (req.headers["x-requested-with"] !== "release-readiness") throw new HttpError(403, "Missing X-Requested-With header.");
     const origin = req.headers.origin;
-    if (origin && new URL(origin).host !== req.headers.host) throw new HttpError(403, "Cross-origin request refused.");
+    if (origin) {
+      let host = null;
+      try { host = new URL(origin).host; } catch { /* "null", junk and file:// origins are never ours */ }
+      if (host !== req.headers.host) throw new HttpError(403, "Cross-origin request refused.");
+    }
   }
 
   const text = (v, max = 500) => String(v ?? "").trim().slice(0, max);
@@ -275,7 +283,7 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
     "GET /api/agent": async (req, url) => {
       const id = url.searchParams.get("releaseId");
       if (!id) return agent.inbox();
-      if (!relDb.get().releases[id]) throw new HttpError(404, "No such release.");
+      if (!Object.hasOwn(relDb.get().releases, id)) throw new HttpError(404, "No such release.");
       return agent.view(id);
     },
     "POST /api/agent/check": async (req, url, user) => {
@@ -301,26 +309,26 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
       guard(req); aiLimit(user);
       const body = await readBody(req, PLAN_BYTES);
       if (!validPlan(body.plan)) throw new HttpError(400, "That is not a release plan.");
-      try { return await ai.briefing(body.plan, body.audience); } catch (e) { throw new HttpError(e.status || 502, e.message); }
+      try { return await ai.briefing(completePlan(body.plan), body.audience); } catch (e) { throw new HttpError(e.status || 502, e.message); }
     },
     "POST /api/ai/risks": async (req, url, user) => {
       guard(req); aiLimit(user);
       const body = await readBody(req, PLAN_BYTES);
       if (!validPlan(body.plan)) throw new HttpError(400, "That is not a release plan.");
-      try { return await ai.risks(body.plan); } catch (e) { throw new HttpError(e.status || 502, e.message); }
+      try { return await ai.risks(completePlan(body.plan)); } catch (e) { throw new HttpError(e.status || 502, e.message); }
     },
     "POST /api/ai/dependencies": async (req, url, user) => {
       guard(req); aiLimit(user);
       const body = await readBody(req, PLAN_BYTES);
       if (!validPlan(body.plan)) throw new HttpError(400, "That is not a release plan.");
-      try { return await ai.dependencies(body.plan); } catch (e) { throw new HttpError(e.status || 502, e.message); }
+      try { return await ai.dependencies(completePlan(body.plan)); } catch (e) { throw new HttpError(e.status || 502, e.message); }
     },
 
     "POST /api/ai/raid": async (req, url, user) => {
       guard(req); aiLimit(user);
       const body = await readBody(req, PLAN_BYTES);
       if (!validPlan(body.plan)) throw new HttpError(400, "That is not a release plan.");
-      try { return await ai.raid(body.plan); } catch (e) { throw new HttpError(e.status || 502, e.message); }
+      try { return await ai.raid(completePlan(body.plan)); } catch (e) { throw new HttpError(e.status || 502, e.message); }
     },
     // Schedule check across all releases. It reads the plans itself, so the page sends nothing.
     "POST /api/ai/schedule": async (req, url, user) => {
@@ -366,9 +374,10 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
   const validPlan = (p) => Boolean(p && typeof p === "object" && !Array.isArray(p) && Array.isArray(p.tickets) && p.release && typeof p.release === "object");
 
   /** GET, PUT and DELETE on one release. PUT carries the version the editor started from, so two people cannot silently overwrite each other. */
+  const own = (o, k) => (Object.hasOwn(o, k) ? o[k] : undefined); // an id like "constructor" must not find Object's own methods
   function releaseHandler(method, id) {
     if (method === "GET") return async () => {
-      const r = relDb.get().releases[id];
+      const r = own(relDb.get().releases, id);
       if (!r) throw new HttpError(404, "No such release.");
       return r;
     };
@@ -379,7 +388,7 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
       const base = Number(body.baseVersion ?? 0);
       const by = user.name || user.email;
       return relDb.mutate((s) => {
-        const cur = s.releases[id];
+        const cur = own(s.releases, id);
         if (!cur && Object.keys(s.releases).length >= MAX_RELEASES) throw new HttpError(400, "Too many releases. Delete old ones first.");
         if (cur && cur.version !== base) {
           const e = new HttpError(409, `${cur.updatedBy} changed this release after you opened it.`);
@@ -399,7 +408,7 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
       guard(req);
       const by = user.name || user.email;
       return relDb.mutate((s) => {
-        const cur = s.releases[id];
+        const cur = own(s.releases, id);
         if (!cur) return { ok: true };
         delete s.releases[id];
         s.audit.push(auditEntry("delete", by, `Deleted ${cur.plan.release?.name || "Untitled release"}`));

@@ -2,7 +2,7 @@
 import { checkRelease, newItem, trimInbox } from "./agent.js";
 import { buildSchedule, conflictsFor } from "./schedule.js";
 import { sendSlack as realSendSlack } from "./notify.js";
-import { isClosed } from "./plan.js";
+import { isClosed, completePlan } from "./plan.js";
 
 const HOURS = [1, 4, 12, 24];
 const strip = (run) => (run ? { at: run.at, by: run.by, source: run.source, first: run.first, quiet: run.quiet, changes: run.changes, created: run.items } : null);
@@ -17,7 +17,7 @@ export function createAgentService({ relDb, agentDb, ai, env = process.env, deps
   const running = new Set();
 
   async function run(id, source, by, now = Date.now()) {
-    const rec = relDb.get().releases[id];
+    const rec = Object.hasOwn(relDb.get().releases, id) ? relDb.get().releases[id] : null;
     if (!rec) throw new AgentError(404, "No such release.");
     if (running.has(id)) throw new AgentError(409, "A check is already running for this release.");
     running.add(id);
@@ -27,7 +27,7 @@ export function createAgentService({ relDb, agentDb, ai, env = process.env, deps
       const existing = st.inbox.filter((i) => i.releaseId === id);
       const plans = Object.values(relDb.get().releases).map((x) => ({ ...x.plan, id: x.id }));
       const clashes = conflictsFor(buildSchedule(plans, { now }), id);
-      const r = await checkRelease({ plan: rec.plan, ai, prev, existing, clashes, now });
+      const r = await checkRelease({ plan: completePlan(rec.plan), ai, prev, existing, clashes, now });
       await agentDb.mutate((s) => {
         s.runs[id] = { at: now, by, source, snapshot: r.snapshot, changes: r.changes.slice(0, 40), first: r.first, quiet: r.quiet, items: r.drafts.length };
         for (const i of s.inbox) if (r.expire.includes(i.id)) { i.status = "expired"; i.decidedAt = now; i.decidedBy = "agent"; i.outcome = "No longer applies"; }
@@ -93,7 +93,7 @@ export function createAgentService({ relDb, agentDb, ai, env = process.env, deps
   }
 
   async function setAuto(id, on, hours) {
-    if (!relDb.get().releases[id]) throw new AgentError(404, "No such release.");
+    if (!Object.hasOwn(relDb.get().releases, id)) throw new AgentError(404, "No such release.");
     const h = HOURS.includes(Number(hours)) ? Number(hours) : 4;
     await agentDb.mutate((s) => { s.auto[id] = { ...(s.auto[id] || {}), on: Boolean(on), hours: h }; });
     return view(id);
