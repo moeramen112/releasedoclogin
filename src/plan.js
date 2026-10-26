@@ -243,7 +243,7 @@ export function nextPlan(prev, now = Date.now()) {
     settings: keep.settings || defaultSettings(),
     customChecks: (keep.customChecks || []).map((c) => ({ ...c, state: "unset" })),
     // Open risks and assumptions carry over to the next release; issues and dependencies belong to the one they were found in.
-    raid: (keep.raid || []).filter((r) => (r.type === "Risk" || r.type === "Assumption") && !["Closed", "Confirmed", "Wrong"].includes(r.status)).map((r) => ({ ...r, id: "x" + now.toString(36) + Math.random().toString(36).slice(2, 5), source: "" })),
+    raid: (Array.isArray(keep.raid) ? keep.raid : []).filter((r) => r && (r.type === "Risk" || r.type === "Assumption") && !["Closed", "Confirmed", "Wrong"].includes(r.status)).map((r) => ({ ...r, id: "x" + now.toString(36) + Math.random().toString(36).slice(2, 5), source: "" })),
   };
   next.runbook = generateRunbook(next);
   return next;

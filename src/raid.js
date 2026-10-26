@@ -20,6 +20,8 @@ const CLOSED = new Set(["Closed", "Confirmed", "Wrong"]);
 const RANK = { High: 0, Medium: 1, Low: 2 };
 
 const clip = (s, n) => String(s ?? "").replace(/\s+/g, " ").trim().slice(0, n);
+/** A list from saved data: anything that is not an array becomes empty, and entries that are not objects are dropped. */
+const objs = (v) => (Array.isArray(v) ? v.filter((x) => x && typeof x === "object") : []);
 const asOf = (list, v, fallback) => (list.includes(v) ? v : fallback);
 
 /** An empty item of one type. `source` is set on items that came from a suggestion. */
@@ -69,15 +71,15 @@ const sug = (type, title, source, rating, response = "", owner = "", due = "") =
  */
 export const SOURCES = [
   { id: "handoffs", build(plan, { now }) {
-    const dep = analyzeDependencies(plan.tickets || [], plan.handoffs || [], now, parseLocal(plan.when?.freezeAt));
-    return dep.overdue.map((h) => sug("Dependency", `${h.what} (${h.from || "?"} to ${h.to || "?"}) is overdue`, `handoff|${clip(h.what, 60)}|${h.from}|${h.to}`, "High", "Ask the owner for a new date.", (plan.handoffs.find((x) => x.what === h.what) || {}).owner, h.due));
+    const dep = analyzeDependencies(objs(plan.tickets), objs(plan.handoffs), now, parseLocal(plan.when?.freezeAt));
+    return dep.overdue.map((h) => sug("Dependency", `${h.what} (${h.from || "?"} to ${h.to || "?"}) is overdue`, `handoff|${clip(h.what, 60)}|${h.from}|${h.to}`, "High", "Ask the owner for a new date.", (objs(plan.handoffs).find((x) => x.what === h.what) || {}).owner, h.due));
   } },
   { id: "waiting", build(plan, { now }) {
-    const dep = analyzeDependencies(plan.tickets || [], plan.handoffs || [], now, parseLocal(plan.when?.freezeAt));
+    const dep = analyzeDependencies(objs(plan.tickets), objs(plan.handoffs), now, parseLocal(plan.when?.freezeAt));
     return dep.waiting.slice(0, 5).map((w) => sug("Dependency", `${w.key} waits on ${w.on.map((x) => (x.kind === "handoff" ? x.what : x.key)).join(", ")}`, `waiting|${w.key}`, w.status === "In progress" || w.status === "In review" ? "High" : "Medium", "Finish the blocking work first, or agree a way to work in parallel."));
   } },
   { id: "bugs", build(plan) {
-    return (plan.tickets || []).filter((t) => t.type === "Bug" && t.status !== DONE && ["P0", "P1"].includes(t.priority))
+    return objs(plan.tickets).filter((t) => t.type === "Bug" && t.status !== DONE && ["P0", "P1"].includes(t.priority))
       .map((t) => sug("Issue", `${t.key}: ${clip(t.summary, 90) || "open bug"} (${t.priority})`, `bug|${t.key}`, "High", "Fix before the freeze, or agree a waiver.", t.assignee));
   } },
   { id: "checks", build(plan) {
@@ -101,7 +103,7 @@ export const SOURCES = [
  */
 export function suggestRaid(plan, ctx = {}) {
   const c = { now: Date.now(), clashes: [], max: 8, ...ctx };
-  const have = new Set([...(plan.raid || []).map((r) => r.source).filter(Boolean), ...(plan.raidDismissed || [])]);
+  const have = new Set([...objs(plan.raid).map((r) => r.source).filter(Boolean), ...(Array.isArray(plan.raidDismissed) ? plan.raidDismissed : [])]);
   const out = [];
   for (const s of SOURCES) {
     let list = [];
@@ -118,7 +120,7 @@ export function acceptSuggestion(s, now = Date.now()) {
 
 /** Check AI-written suggestions before they reach the screen. Anything that does not fit the lists is dropped. */
 export function validateRaidSuggestions(raw, plan, max = 8) {
-  const have = new Set([...(plan.raid || []).map((r) => r.source).filter(Boolean), ...(plan.raidDismissed || [])]);
+  const have = new Set([...objs(plan.raid).map((r) => r.source).filter(Boolean), ...(Array.isArray(plan.raidDismissed) ? plan.raidDismissed : [])]);
   const out = [];
   for (const x of Array.isArray(raw) ? raw : []) {
     if (!x || !RAID_TYPES.includes(x.type)) continue;

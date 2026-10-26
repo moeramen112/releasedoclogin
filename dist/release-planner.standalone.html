@@ -151,7 +151,7 @@ td .id { font-family: var(--font-data); font-size: 12px; color: var(--muted); di
 @media (prefers-reduced-motion: no-preference) { .progress span, .bar span { transition: width .3s ease; } }
 
 /* ---------- navigation ---------- */
-.nav { display: flex; gap: 4px; }
+.nav { display: flex; flex-wrap: wrap; gap: 4px; }
 .nav a { text-decoration: none; color: var(--muted); font-weight: 600; font-size: 13px; padding: 5px 11px; border-radius: 6px; border: 1px solid transparent; }
 .nav a:hover { color: var(--ink); border-color: var(--line); }
 .nav a[aria-current="page"] { color: var(--accent-ink); background: var(--accent); }
@@ -357,6 +357,12 @@ details.quick > summary { cursor: pointer; font-size: 12px; color: var(--muted);
 /* ---------- RAID page ---------- */
 .raid-filters { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 10px 0; }
 .tbl tr.done td { opacity: .6; }
+
+/* long names with no spaces must wrap instead of widening the page */
+.clash-card > div, .cal-name, .tbl td, .ai-item, .banner span { overflow-wrap: anywhere; }
+.clash-card > div { min-width: 0; }
+.raid-filters label, .raid-filters select { max-width: 100%; }
+@media (max-width: 560px) { .raid-filters { flex-direction: column; align-items: stretch; } .raid-filters label { display: flex; justify-content: space-between; gap: 8px; } .raid-filters select { max-width: 60%; } .cal { max-width: 100%; } }
 
 </style>
 </head>
@@ -1299,7 +1305,7 @@ function nextPlan(prev, now = Date.now()) {
     settings: keep.settings || defaultSettings(),
     customChecks: (keep.customChecks || []).map((c) => ({ ...c, state: "unset" })),
     // Open risks and assumptions carry over to the next release; issues and dependencies belong to the one they were found in.
-    raid: (keep.raid || []).filter((r) => (r.type === "Risk" || r.type === "Assumption") && !["Closed", "Confirmed", "Wrong"].includes(r.status)).map((r) => ({ ...r, id: "x" + now.toString(36) + Math.random().toString(36).slice(2, 5), source: "" })),
+    raid: (Array.isArray(keep.raid) ? keep.raid : []).filter((r) => r && (r.type === "Risk" || r.type === "Assumption") && !["Closed", "Confirmed", "Wrong"].includes(r.status)).map((r) => ({ ...r, id: "x" + now.toString(36) + Math.random().toString(36).slice(2, 5), source: "" })),
   };
   next.runbook = generateRunbook(next);
   return next;
@@ -1744,6 +1750,7 @@ const { parseLocal } = __mod_risk;
 const { fmtLocal, isClosed } = __mod_plan;
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
+const MAX_WINDOW_HOURS = 168; // a deploy window longer than a week is a typo; use the 2-hour default instead of clashing with everything
 
 const DEFAULT_RULES = {
   bufferHours: 12,          // two deploys closer than this are "too close"
@@ -1768,7 +1775,7 @@ function toItem(plan, id = plan?.id) {
   const when = plan?.when || {};
   const start = parseLocal(when.deployAt);
   const hours = Number(when.windowHours);
-  const end = start === null ? null : start + (Number.isFinite(hours) && hours > 0 ? hours : 2) * HOUR;
+  const end = start === null ? null : start + (Number.isFinite(hours) && hours > 0 && hours <= MAX_WINDOW_HOURS ? hours : 2) * HOUR;
   return {
     id: String(id ?? ""),
     name: clip(plan?.release?.name, 80) || "Untitled release",
@@ -2011,6 +2018,8 @@ const CLOSED = new Set(["Closed", "Confirmed", "Wrong"]);
 const RANK = { High: 0, Medium: 1, Low: 2 };
 
 const clip = (s, n) => String(s ?? "").replace(/\s+/g, " ").trim().slice(0, n);
+/** A list from saved data: anything that is not an array becomes empty, and entries that are not objects are dropped. */
+const objs = (v) => (Array.isArray(v) ? v.filter((x) => x && typeof x === "object") : []);
 const asOf = (list, v, fallback) => (list.includes(v) ? v : fallback);
 
 /** An empty item of one type. `source` is set on items that came from a suggestion. */
@@ -2060,15 +2069,15 @@ const sug = (type, title, source, rating, response = "", owner = "", due = "") =
  */
 const SOURCES = [
   { id: "handoffs", build(plan, { now }) {
-    const dep = analyzeDependencies(plan.tickets || [], plan.handoffs || [], now, parseLocal(plan.when?.freezeAt));
-    return dep.overdue.map((h) => sug("Dependency", `${h.what} (${h.from || "?"} to ${h.to || "?"}) is overdue`, `handoff|${clip(h.what, 60)}|${h.from}|${h.to}`, "High", "Ask the owner for a new date.", (plan.handoffs.find((x) => x.what === h.what) || {}).owner, h.due));
+    const dep = analyzeDependencies(objs(plan.tickets), objs(plan.handoffs), now, parseLocal(plan.when?.freezeAt));
+    return dep.overdue.map((h) => sug("Dependency", `${h.what} (${h.from || "?"} to ${h.to || "?"}) is overdue`, `handoff|${clip(h.what, 60)}|${h.from}|${h.to}`, "High", "Ask the owner for a new date.", (objs(plan.handoffs).find((x) => x.what === h.what) || {}).owner, h.due));
   } },
   { id: "waiting", build(plan, { now }) {
-    const dep = analyzeDependencies(plan.tickets || [], plan.handoffs || [], now, parseLocal(plan.when?.freezeAt));
+    const dep = analyzeDependencies(objs(plan.tickets), objs(plan.handoffs), now, parseLocal(plan.when?.freezeAt));
     return dep.waiting.slice(0, 5).map((w) => sug("Dependency", `${w.key} waits on ${w.on.map((x) => (x.kind === "handoff" ? x.what : x.key)).join(", ")}`, `waiting|${w.key}`, w.status === "In progress" || w.status === "In review" ? "High" : "Medium", "Finish the blocking work first, or agree a way to work in parallel."));
   } },
   { id: "bugs", build(plan) {
-    return (plan.tickets || []).filter((t) => t.type === "Bug" && t.status !== DONE && ["P0", "P1"].includes(t.priority))
+    return objs(plan.tickets).filter((t) => t.type === "Bug" && t.status !== DONE && ["P0", "P1"].includes(t.priority))
       .map((t) => sug("Issue", `${t.key}: ${clip(t.summary, 90) || "open bug"} (${t.priority})`, `bug|${t.key}`, "High", "Fix before the freeze, or agree a waiver.", t.assignee));
   } },
   { id: "checks", build(plan) {
@@ -2092,7 +2101,7 @@ const SOURCES = [
  */
 function suggestRaid(plan, ctx = {}) {
   const c = { now: Date.now(), clashes: [], max: 8, ...ctx };
-  const have = new Set([...(plan.raid || []).map((r) => r.source).filter(Boolean), ...(plan.raidDismissed || [])]);
+  const have = new Set([...objs(plan.raid).map((r) => r.source).filter(Boolean), ...(Array.isArray(plan.raidDismissed) ? plan.raidDismissed : [])]);
   const out = [];
   for (const s of SOURCES) {
     let list = [];
@@ -2109,7 +2118,7 @@ function acceptSuggestion(s, now = Date.now()) {
 
 /** Check AI-written suggestions before they reach the screen. Anything that does not fit the lists is dropped. */
 function validateRaidSuggestions(raw, plan, max = 8) {
-  const have = new Set([...(plan.raid || []).map((r) => r.source).filter(Boolean), ...(plan.raidDismissed || [])]);
+  const have = new Set([...objs(plan.raid).map((r) => r.source).filter(Boolean), ...(Array.isArray(plan.raidDismissed) ? plan.raidDismissed : [])]);
   const out = [];
   for (const x of Array.isArray(raw) ? raw : []) {
     if (!x || !RAID_TYPES.includes(x.type)) continue;
