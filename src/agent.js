@@ -5,7 +5,6 @@
 
 import { evaluate } from "./engine.js";
 import { computeRisk } from "./risk.js";
-import { analyzeDependencies } from "./deps.js";
 import { planToSnapshot, planConfig, planState, STATUSES } from "./plan.js";
 
 const up = (s) => String(s ?? "").trim().toUpperCase();
