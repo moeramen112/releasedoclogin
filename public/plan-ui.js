@@ -3,7 +3,7 @@
 import { evaluate } from "/engine.js";
 import { computeRisk } from "/risk.js";
 import { analyzeDependencies, parseKeys, TEAMS, HANDOFF_STATUS } from "/deps.js";
-import { mergeTickets, defaultPlan, blankPlan, nextPlan, applyTemplate, generateRunbook, syncHandoffSteps, isClosed, OUTCOMES, planToSnapshot, planState, planConfig, briefMarkdown, reportModel, reportHtml, reportDocument, reportWord, statusModel, TYPES, PRIORITIES, TICKET_TYPES, STATUSES, AREAS, ENVIRONMENTS, STRATEGIES, CHECK_STATES, PHASES, ROLE_KEYS, TEMPLATES } from "/plan.js";
+import { mergeTickets, completePlan, defaultPlan, blankPlan, nextPlan, applyTemplate, generateRunbook, syncHandoffSteps, isClosed, OUTCOMES, planToSnapshot, planState, planConfig, briefMarkdown, reportModel, reportHtml, reportDocument, reportWord, statusModel, TYPES, PRIORITIES, TICKET_TYPES, STATUSES, AREAS, ENVIRONMENTS, STRATEGIES, CHECK_STATES, PHASES, ROLE_KEYS, TEMPLATES } from "/plan.js";
 import { $, esc } from "/uikit.js";
 import { renderVerdict, renderRisk, renderPoints, renderDeps, renderCriteria, renderBrief, renderHistory, renderRaid } from "/panels.js";
 import { RAID_TYPES, RAID_STATUS, RAID_RATINGS, emptyRaid, summarizeRaid, isOverdue, isClosedRaid, suggestRaid, acceptSuggestion } from "/raid.js";
@@ -30,8 +30,10 @@ const getPath = (o, p) => p.split(".").reduce((a, k) => (a == null ? a : a[k]), 
 function setPath(o, p, v) {
   const keys = p.split(".");
   const last = keys.pop();
-  const target = keys.reduce((a, k) => a[k], o);
+  const target = keys.reduce((a, k) => (a == null ? a : a[k]), o);
+  if (target == null || typeof target !== "object") return false; // the row is gone, so there is nothing to change
   target[last] = v;
+  return true;
 }
 function fillDefaults(def, val) {
   if (Array.isArray(def) || typeof def !== "object" || def === null) return val === undefined ? def : val;
@@ -45,6 +47,7 @@ function fillDefaults(def, val) {
 const newId = () => "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 // What a saved plan is filled in from. Handoffs start empty, so an older plan never picks up the example's.
 const FILL = () => ({ ...defaultPlan(), handoffs: [], raid: [] });
+const tidy = (p) => completePlan(fillDefaults(FILL(), p)); // defaults for what is missing, and no junk rows, so a damaged save cannot stop the page loading
 const validPlan = (p) => Boolean(p && Array.isArray(p.tickets) && p.release);
 
 function loadLib() {
@@ -56,14 +59,14 @@ function loadLib() {
       const order = (l.order || []).filter((id) => validPlan(l.items?.[id]));
       if (order.length) {
         const items = {};
-        for (const id of order) items[id] = { ...fillDefaults(FILL(), l.items[id]), id };
+        for (const id of order) items[id] = { ...tidy(l.items[id]), id };
         return { current: items[l.current] ? l.current : order[0], order, items };
       }
     }
     const old = store.get(OLD_KEY); // keep whatever the first version saved
     if (old) {
       const p = JSON.parse(old);
-      if (validPlan(p)) { const id = newId(); return { current: id, order: [id], items: { [id]: { ...fillDefaults(FILL(), p), id } } }; }
+      if (validPlan(p)) { const id = newId(); return { current: id, order: [id], items: { [id]: { ...tidy(p), id } } }; }
     }
   } catch { /* fall through to the example */ }
   const id = newId();
@@ -148,7 +151,7 @@ function showConflict(message) {
   el.innerHTML = `${esc(message || "Someone else changed this release.")} Your edits here are <strong>not saved</strong>. <button class="btn small" type="button" data-act="conflict-load">Load their version</button> <button class="btn small" type="button" data-act="conflict-copy">Keep mine as a copy</button>`;
 }
 
-const fromServer = (r) => ({ ...fillDefaults(FILL(), r.plan), id: r.id });
+const fromServer = (r) => ({ ...tidy(r.plan), id: r.id });
 function adopt(r) {
   const plan = fromServer(r);
   lib.items[r.id] = plan;
@@ -659,7 +662,9 @@ function changed() {
 
 function onEdit(e) {
   const el = e.target.closest("[data-p]");
-  if (!el) return;
+  if (!el || !el.isConnected) return; // a field that was just redrawn can still fire a late change; it must not write into the new release
+  const parent = el.dataset.p.split(".").slice(0, -1).reduce((a, k) => (a == null ? a : a[k]), P);
+  if (parent == null || typeof parent !== "object") return;
   if (el.dataset.multi) {
     setPath(P, el.dataset.p, [...document.querySelectorAll(`[data-multi][data-p="${el.dataset.p}"]:checked`)].map((x) => x.value));
   } else if (el.type === "radio") {
@@ -977,7 +982,7 @@ $("#import-file").addEventListener("change", async (e) => {
   try {
     const p = JSON.parse(await file.text());
     if (!p || !Array.isArray(p.tickets) || !p.release) throw new Error("That file is not a release plan.");
-    addRelease(fillDefaults(FILL(), p));
+    addRelease(tidy(p));
     sayRel(`Imported “${P.release.name || "Untitled release"}” as a new release.`, false, "ok");
   } catch (err) {
     $("#results").insertAdjacentHTML("afterbegin", `<div class="banner bad" role="alert"><strong>Could not import.</strong><span>${esc(err.message)}</span></div>`);

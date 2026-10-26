@@ -42,3 +42,27 @@ test("nextPlan ignores junk in the RAID list and keeps only open risks and assum
   assert.deepEqual(nextPlan(p, NOW).raid.map((r) => r.title), ["keep"]);
   assert.deepEqual(nextPlan({ ...defaultPlan(NOW), raid: "nope" }, NOW).raid, []);
 });
+
+test("a huge count in the signals cannot build millions of rows", async () => {
+  const { planToSnapshot, defaultPlan } = await import("../src/plan.js");
+  const p = defaultPlan(Date.parse("2026-10-26T12:00"));
+  Object.assign(p.signals, { openPrs: 99999999, mergedTotal: 1e12, lateMerged: 1e12 });
+  p.signals.ci.flaky = 1e9; p.signals.ci.pending = "9e99";
+  const t0 = Date.now();
+  const snap = planToSnapshot(p, Date.parse("2026-10-26T12:00"));
+  assert.ok(Date.now() - t0 < 2000);
+  assert.ok(snap.data.openPrs.length <= 5000 && snap.data.mergedPrs.length <= 5000);
+});
+
+test("completePlan leaves a good plan exactly as it is and repairs a damaged one", async () => {
+  const { completePlan, defaultPlan, blankPlan, planToSnapshot } = await import("../src/plan.js");
+  const now = Date.parse("2026-10-26T12:00");
+  for (const good of [defaultPlan(now), blankPlan(now), blankPlan(now, "Hotfix")]) assert.deepEqual(completePlan(good), { raidDismissed: [], ...good });
+  const hurt = { release: { name: "x" }, tickets: [null, 5, "a", { key: "A-1", points: "3", summary: { no: 1 } }], handoffs: "nope", raid: [{ title: 7, owner: { x: 1 } }, null], signoffs: [{ role: "QA", approved: "yes" }], scope: null, people: 3 };
+  const fixed = completePlan(hurt);
+  assert.deepEqual(fixed.tickets, [{ key: "A-1", points: 3, summary: "" }]);
+  assert.deepEqual(fixed.raid, [{ title: "7", owner: "" }]);
+  assert.equal(fixed.signoffs[0].approved, true);
+  assert.ok(Array.isArray(fixed.handoffs) && fixed.scope.bigAt === 8 && typeof fixed.people === "object");
+  assert.doesNotThrow(() => planToSnapshot(fixed, now));
+});

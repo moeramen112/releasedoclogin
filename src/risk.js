@@ -85,7 +85,7 @@ export const LEVELS = [
   { name: "High", below: 75 },
   { name: "Critical", below: 101 },
 ];
-export const levelFor = (score) => LEVELS.find((l) => score < l.below).name;
+export const levelFor = (score) => (LEVELS.find((l) => score < l.below) || LEVELS[LEVELS.length - 1]).name; // a score that is not a number reads as the worst level, never as a crash
 
 /** Staged rollout suggestion, tighter as risk goes up. */
 export function rolloutLadder(level) {

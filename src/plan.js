@@ -4,6 +4,7 @@
 import { num, parseLocal, summarizePoints, DONE } from "./risk.js";
 import { analyzeDependencies } from "./deps.js";
 
+const MAX_COUNT = 5000;
 export const TYPES = ["Major release", "Minor release", "Patch", "Hotfix"];
 export const PRIORITIES = ["P0", "P1", "P2", "P3"];
 export const TICKET_TYPES = ["Story", "Bug", "Task"];
@@ -223,6 +224,48 @@ export function blankPlan(now = Date.now(), type = "Minor release") {
   return applyTemplate(plan, type);
 }
 
+const ROW_SHAPES = {
+  tickets: { key: "text", summary: "text", type: "text", priority: "text", points: "number", status: "text", assignee: "text", area: "text", team: "text", blockedBy: "text" },
+  handoffs: { what: "text", from: "text", to: "text", owner: "text", due: "text", status: "text", blocks: "text" },
+  raid: { id: "text", type: "text", title: "text", owner: "text", due: "text", status: "text", rating: "text", response: "text", source: "text" },
+  signoffs: { role: "text", who: "text", approved: "flag" },
+  runbook: { id: "text", phase: "text", step: "text", owner: "text", at: "text", status: "text" },
+};
+
+/**
+ * A plan with every section present. A plan saved through the API (or by an older version) can lack whole
+ * sections; the server fills the gaps before it analyses one, so nothing downstream has to guess.
+ * Nothing is invented that a person would notice: no dates, no runbook steps, no tickets.
+ */
+export function completePlan(plan) {
+  const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
+  const fill = (base, v) => {
+    if (Array.isArray(base)) return Array.isArray(v) ? v : [];
+    if (isObj(base)) { const src = isObj(v) ? v : {}; const out = { ...src }; for (const k of Object.keys(base)) out[k] = fill(base[k], src[k]); return out; }
+    return v === undefined || v === null ? base : v;
+  };
+  const base = blankPlan(0);
+  base.when = { freezeAt: "", meetingAt: "", deployAt: "", windowHours: 2 };
+  base.runbook = []; base.signoffs = []; base.customChecks = [];
+  const out = fill(base, plan);
+  for (const k of ["tickets", "handoffs", "raid", "signoffs", "runbook", "customChecks", "extraPeople"]) out[k] = out[k].filter(isObj);
+  // A field that is present must be the kind of value the screens expect (text where there is text), or one bad cell stops the page.
+  for (const [k, shape] of Object.entries(ROW_SHAPES)) {
+    out[k] = out[k].map((row) => {
+      const r = { ...row };
+      for (const [f, kind] of Object.entries(shape)) {
+        if (!(f in r)) continue;
+        const v = r[f];
+        if (kind === "text") r[f] = v == null || typeof v === "object" ? "" : String(v);
+        else if (kind === "number") r[f] = Number.isFinite(Number(v)) && v !== "" && v !== null && typeof v !== "object" ? Number(v) : 0;
+        else r[f] = Boolean(v);
+      }
+      return r;
+    });
+  }
+  return out;
+}
+
 /**
  * The next release in a series: keeps what rarely changes (people, repository, environments, rollout and
  * rollback settings, budgets, which sign-offs are needed) and clears what belongs to one release
@@ -340,11 +383,12 @@ export function planToSnapshot(plan, now = Date.now()) {
     .map((x) => ({ key: x.key, sev: x.priority, title: x.summary, owner: x.assignee || "Unassigned", ageDays: 0, status: x.status, source: "jira" }));
 
   const real = String(s.ci.realFailures || "").split("\n").map((x) => x.trim()).filter(Boolean);
-  const flaky = Array.from({ length: Math.max(0, num(s.ci.flaky)) }, (_, i) => `flaky check ${i + 1} (quarantine)`);
-  const pending = Array.from({ length: Math.max(0, num(s.ci.pending)) }, (_, i) => `pending check ${i + 1}`);
+  const count = (v) => Math.min(MAX_COUNT, Math.max(0, Math.floor(num(v)))); // a typo like 99999999 must not build millions of rows
+  const flaky = Array.from({ length: count(s.ci.flaky) }, (_, i) => `flaky check ${i + 1} (quarantine)`);
+  const pending = Array.from({ length: count(s.ci.pending) }, (_, i) => `pending check ${i + 1}`);
   const total = Math.max(num(s.ci.total), real.length + flaky.length + pending.length);
 
-  const mergedTotal = Math.max(0, num(s.mergedTotal));
+  const mergedTotal = count(s.mergedTotal);
   const late = Math.min(mergedTotal, Math.max(0, num(s.lateMerged)));
   const unapproved = Math.min(mergedTotal, Math.max(0, num(s.mergedUnapproved)));
   const mergedPrs = Array.from({ length: mergedTotal }, (_, i) => ({
@@ -353,7 +397,7 @@ export function planToSnapshot(plan, now = Date.now()) {
     approved: i >= unapproved,
   }));
 
-  const openPrs = Array.from({ length: Math.max(0, num(s.openPrs)) }, (_, i) => ({
+  const openPrs = Array.from({ length: count(s.openPrs) }, (_, i) => ({
     number: i + 1, checks: i < num(s.failingOpenPrs) ? "failing" : "passing",
   }));
 
