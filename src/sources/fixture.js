@@ -2,8 +2,6 @@
 // Everything here is invented.
 
 export function demoSnapshot(release, now = Date.now()) {
-  const day = 86400000;
-  const iso = (daysAgo) => new Date(now - daysAgo * day).toISOString();
   const freeze = Date.parse(release.freezeDate);
 
   const mergedPrs = Array.from({ length: 28 }, (_, i) => ({

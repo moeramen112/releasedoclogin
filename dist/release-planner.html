@@ -2774,7 +2774,7 @@ function relLabel(p, now) {
 function renderRelSelect() {
   const now = Date.now(), sel = $("#rel-select");
   if (!sel) return;
-  sel.innerHTML = lib.order.map((id) => `<option value="${esc(id)}"${id === lib.current ? " selected" : ""}>${esc(relLabel(id === lib.current ? P : lib.items[id], now))}</option>`).join("");
+  sel.innerHTML = lib.order.filter((id) => lib.items[id] || id === lib.current).map((id) => `<option value="${esc(id)}"${id === lib.current ? " selected" : ""}>${esc(relLabel(id === lib.current ? P : lib.items[id], now))}</option>`).join("");
 }
 
 function showRelease() {
