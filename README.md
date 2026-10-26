@@ -6,6 +6,8 @@ This edition is built for a team. Only people you invite can open it, each perso
 
 ![Dashboard](docs/dashboard.png)
 
+Every screenshot has a green bar on top: **how to get there** (which menu to click) and **who is signed in** (which role can use it).
+
 **Contents**
 
 - **Using it:** [The problem](#the-problem) · [What it does](#what-it-does) · [Dependencies](#dependencies-what-waits-on-what) · [Every release](#using-it-for-every-release) · [Release docs](#release-docs)
