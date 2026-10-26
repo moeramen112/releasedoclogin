@@ -78,3 +78,28 @@ test("agent: a clash makes one chase draft for the release, once", async () => {
   const none = await checkRelease({ plan: clash[0], ai, prev: null, existing: [], now: NOW });
   assert.equal(none.drafts.filter((d) => d.dedupe.startsWith("clash|")).length, 0);
 });
+
+test("RAID AI: demo mode adds nothing; live mode keeps only valid risks and assumptions", async () => {
+  const p = { ...blankPlan(NOW), id: "r", release: { name: "R" } };
+  assert.deepEqual(await createAi({ env: {} }).raid(p), { mode: "demo", suggestions: [] });
+  const reply = JSON.stringify([{ type: "Risk", title: "Vendor sandbox may be down", rating: "High", response: "Book a backup window." }, { type: "Issue", title: "Not allowed here" }, { type: "Assumption", title: "QA has the devices", rating: "Huge" }, { type: "Nope", title: "x" }]);
+  const calls = [];
+  const ai = createAi({ env: { ANTHROPIC_API_KEY: "k" }, fetchImpl: async (u, init) => { calls.push(JSON.parse(init.body)); return { ok: true, status: 200, json: async () => ({ content: [{ type: "text", text: reply }] }) }; } });
+  const r = await ai.raid(p);
+  assert.deepEqual(r.suggestions.map((x) => [x.type, x.rating]), [["Risk", "High"], ["Assumption", "Medium"]]);
+  assert.ok(calls[0].messages[0].content.includes("untrusted"));
+  const none = createAi({ env: { ANTHROPIC_API_KEY: "k" }, fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ content: [{ type: "text", text: "no json" }] }) }) });
+  assert.deepEqual((await none.raid(p)).suggestions, []);
+});
+
+test("agent: an overdue RAID item with an owner makes one chase note, once", async () => {
+  const ai = createAi({ env: {} });
+  const p = { ...clash[0], raid: [{ id: "x1", type: "Risk", title: "Vendor sandbox", owner: "Amy", due: "2026-10-20T09:00", status: "Open", rating: "High", response: "Book a backup.", source: "" }, { id: "x2", type: "Risk", title: "No owner", owner: "", due: "2026-10-20T09:00", status: "Open", rating: "High", response: "", source: "" }, { id: "x3", type: "Risk", title: "Closed", owner: "Bo", due: "2026-10-20T09:00", status: "Closed", rating: "Low", response: "", source: "" }] };
+  const a = await checkRelease({ plan: p, ai, prev: null, existing: [], now: NOW });
+  const drafts = a.drafts.filter((d) => d.dedupe.startsWith("raid|"));
+  assert.equal(drafts.length, 1);
+  assert.match(drafts[0].text, /Hi Amy/);
+  assert.equal(drafts[0].importance, "high");
+  const b = await checkRelease({ plan: p, ai, prev: a.snapshot, existing: a.drafts.map((d, i) => ({ ...d, id: "i" + i, status: "open" })), now: NOW });
+  assert.equal(b.drafts.filter((d) => d.dedupe.startsWith("raid|")).length, 0);
+});

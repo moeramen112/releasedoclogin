@@ -143,6 +143,11 @@ export function defaultPlan(now = Date.now()) {
     { what: "Final invoice designs", from: "Design", to: "Frontend", owner: "Rin Aoki", due: dayAt(now, -6, 17), status: "Done", blocks: "REL-2750" },
     { what: "Android 14 test devices for QA", from: "DevOps", to: "QA", owner: "Hiro Nakamura", due: dayAt(now, -1, 12), status: "In progress", blocks: "REL-2877" },
   ];
+  plan.raid = [
+    { id: "xe1", type: "Risk", title: "Android 14 test devices may not arrive before the freeze", owner: "Hiro Nakamura", due: dayAt(now, 1, 12), status: "Open", rating: "High", response: "Use the cloud device farm if the physical devices slip.", source: "" },
+    { id: "xe2", type: "Assumption", title: "The orders table migration finishes inside the 30-minute window", owner: "Dana Kowalski", due: dayAt(now, 1, 17), status: "Unchecked", rating: "Medium", response: "Rerun the dry run on production-size data.", source: "" },
+    { id: "xe3", type: "Dependency", title: "Billing team must publish the currency rates API", owner: "Sam Okafor", due: dayAt(now, 2, 17), status: "In progress", rating: "Medium", response: "", source: "" },
+  ];
   plan.runbook = generateRunbook(plan);
   return plan;
 }
@@ -209,6 +214,7 @@ export function blankPlan(now = Date.now(), type = "Minor release") {
     },
     checks: { migration: "unset", rollback: "unset", notes: "unset", errorbudget: "unset" },
     handoffs: [],
+    raid: [], raidDismissed: [], // the RAID log (see raid.js) and the suggestions a person turned down
     signoffs: [], runbook: [], waivers: {},
     settings: defaultSettings(),
     customChecks: [], // { id, name, required, state } checks a person defines and confirms
@@ -236,6 +242,8 @@ export function nextPlan(prev, now = Date.now()) {
     signoffs: keep.signoffs.map((x) => ({ ...x, approved: false })),
     settings: keep.settings || defaultSettings(),
     customChecks: (keep.customChecks || []).map((c) => ({ ...c, state: "unset" })),
+    // Open risks and assumptions carry over to the next release; issues and dependencies belong to the one they were found in.
+    raid: (keep.raid || []).filter((r) => (r.type === "Risk" || r.type === "Assumption") && !["Closed", "Confirmed", "Wrong"].includes(r.status)).map((r) => ({ ...r, id: "x" + now.toString(36) + Math.random().toString(36).slice(2, 5), source: "" })),
   };
   next.runbook = generateRunbook(next);
   return next;

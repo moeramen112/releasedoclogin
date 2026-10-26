@@ -344,3 +344,7 @@ details.quick > summary { cursor: pointer; font-size: 12px; color: var(--muted);
 .clash-card.sev-high { border-left-color: var(--bad); } .clash-card.sev-medium { border-left-color: var(--warn); } .clash-card.sev-low { border-left-color: var(--pend); }
 .clash-card > div { display: flex; flex-direction: column; gap: 6px; }
 .msg.ok { color: var(--good); }
+
+/* ---------- RAID page ---------- */
+.raid-filters { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 10px 0; }
+.tbl tr.done td { opacity: .6; }

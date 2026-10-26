@@ -6,6 +6,7 @@
 import { evaluate } from "./engine.js";
 import { computeRisk } from "./risk.js";
 import { planToSnapshot, planConfig, planState, STATUSES } from "./plan.js";
+import { cleanRaid, isOverdue } from "./raid.js";
 
 const up = (s) => String(s ?? "").trim().toUpperCase();
 const clip = (s, n) => String(s ?? "").replace(/\s+/g, " ").trim().slice(0, n);
@@ -139,7 +140,12 @@ export async function checkRelease({ plan, ai, prev, existing = [], clashes = []
     push({ kind: "chase", title: `Schedule clash: ${name} and ${other.name}`.slice(0, 140), text: `Hi, ${c.text} Can we agree which one moves, or add a safeguard?`, why: c.severity === "high" ? "Deploy windows overlap." : "Releases are scheduled close together.", importance: c.severity === "high" ? "high" : "medium", dedupe: `clash|${c.id}|${c.at}` });
   }
 
-  // 4. Suggestions from the risk spotter and dependency finder that nobody has seen yet.
+  // 4. A chase note for each RAID item that is overdue and has an owner. Items without an owner are shown on the RAID panel instead.
+  for (const r of cleanRaid(plan.raid).filter((x) => isOverdue(x, now) && x.owner).slice(0, 5)) {
+    push({ kind: "chase", title: `Overdue ${r.type.toLowerCase()}: ${r.title}`.slice(0, 140), text: `Hi ${r.owner}, the ${r.type.toLowerCase()} "${r.title}" on ${name} was due ${day(r.due)} and is still ${r.status.toLowerCase()}.${r.response ? ` The plan says: ${r.response}` : ""} Can you update it or give us a new date?`, why: "A RAID item is past its due date.", importance: r.rating === "High" ? "high" : "medium", dedupe: `raid|${r.id}|${r.due}` });
+  }
+
+  // 5. Suggestions from the risk spotter and dependency finder that nobody has seen yet.
   const risks = (await ai.risks(plan)).suggestions, deps = (await ai.dependencies(plan)).suggestions;
   const current = [...risks, ...deps].filter((s) => s.confidence !== "low" || s.kind !== "team");
   const currentIds = new Set(current.map(sugId));

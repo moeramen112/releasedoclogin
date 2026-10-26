@@ -1,5 +1,5 @@
 // Builds dist/release-planner.html: the planner as one self-contained page with no server.
-// It bundles deps.js, engine.js, risk.js, plan.js, history.js, html.js, schedule.js, schedule-view.js, uikit.js, panels.js, assist.js and plan-ui.js, each in its own scope so names cannot collide.
+// It bundles deps.js, engine.js, risk.js, plan.js, history.js, html.js, schedule.js, schedule-view.js, raid.js, uikit.js, panels.js, assist.js and plan-ui.js, each in its own scope so names cannot collide.
 // Run: node scripts/build-standalone.mjs
 
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -29,6 +29,7 @@ const scripts = [
   wrap("html", read("src/html.js")),
   wrap("schedule", read("src/schedule.js")),
   wrap("schedule-view", read("src/schedule-view.js")),
+  wrap("raid", read("src/raid.js")),
   wrap("uikit", read("public/uikit.js")),
   wrap("panels", read("public/panels.js")),
   wrap("assist", read("public/assist.js")),
