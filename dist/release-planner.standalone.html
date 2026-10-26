@@ -354,6 +354,10 @@ details.quick > summary { cursor: pointer; font-size: 12px; color: var(--muted);
 .clash-card > div { display: flex; flex-direction: column; gap: 6px; }
 .msg.ok { color: var(--good); }
 
+/* ---------- RAID page ---------- */
+.raid-filters { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 10px 0; }
+.tbl tr.done td { opacity: .6; }
+
 </style>
 </head>
 <body>
@@ -1195,6 +1199,11 @@ function defaultPlan(now = Date.now()) {
     { what: "Final invoice designs", from: "Design", to: "Frontend", owner: "Rin Aoki", due: dayAt(now, -6, 17), status: "Done", blocks: "REL-2750" },
     { what: "Android 14 test devices for QA", from: "DevOps", to: "QA", owner: "Hiro Nakamura", due: dayAt(now, -1, 12), status: "In progress", blocks: "REL-2877" },
   ];
+  plan.raid = [
+    { id: "xe1", type: "Risk", title: "Android 14 test devices may not arrive before the freeze", owner: "Hiro Nakamura", due: dayAt(now, 1, 12), status: "Open", rating: "High", response: "Use the cloud device farm if the physical devices slip.", source: "" },
+    { id: "xe2", type: "Assumption", title: "The orders table migration finishes inside the 30-minute window", owner: "Dana Kowalski", due: dayAt(now, 1, 17), status: "Unchecked", rating: "Medium", response: "Rerun the dry run on production-size data.", source: "" },
+    { id: "xe3", type: "Dependency", title: "Billing team must publish the currency rates API", owner: "Sam Okafor", due: dayAt(now, 2, 17), status: "In progress", rating: "Medium", response: "", source: "" },
+  ];
   plan.runbook = generateRunbook(plan);
   return plan;
 }
@@ -1261,6 +1270,7 @@ function blankPlan(now = Date.now(), type = "Minor release") {
     },
     checks: { migration: "unset", rollback: "unset", notes: "unset", errorbudget: "unset" },
     handoffs: [],
+    raid: [], raidDismissed: [], // the RAID log (see raid.js) and the suggestions a person turned down
     signoffs: [], runbook: [], waivers: {},
     settings: defaultSettings(),
     customChecks: [], // { id, name, required, state } checks a person defines and confirms
@@ -1288,6 +1298,8 @@ function nextPlan(prev, now = Date.now()) {
     signoffs: keep.signoffs.map((x) => ({ ...x, approved: false })),
     settings: keep.settings || defaultSettings(),
     customChecks: (keep.customChecks || []).map((c) => ({ ...c, state: "unset" })),
+    // Open risks and assumptions carry over to the next release; issues and dependencies belong to the one they were found in.
+    raid: (keep.raid || []).filter((r) => (r.type === "Risk" || r.type === "Assumption") && !["Closed", "Confirmed", "Wrong"].includes(r.status)).map((r) => ({ ...r, id: "x" + now.toString(36) + Math.random().toString(36).slice(2, 5), source: "" })),
   };
   next.runbook = generateRunbook(next);
   return next;
@@ -1977,6 +1989,170 @@ function renderClashBanner(conflicts, releaseId, { calendarHref = "" } = {}) {
 
 return { viewRange, renderTimeline, renderConflicts, renderClashBanner };
 })();
+const __mod_raid = (() => {
+// RAID log: Risks, Assumptions, Issues, Dependencies. One list per release.
+//
+// Pure functions. No clock, no network, no disk. The same file runs on the server (AI check, agent) and in
+// the browser (planner section, RAID page).
+//
+// How to change it
+//  - The lists a person picks from (types, statuses, ratings) are the constants below.
+//  - Where suggestions come from is the SOURCES array: each entry is { id, build(plan, ctx) } and returns
+//    suggested items. Add one to teach the tool a new kind of suggestion; nothing else needs to change.
+//  - A suggestion is only a suggestion. It becomes an item when a person accepts it, and a dismissed one
+//    is remembered in plan.raidDismissed so it does not come back.
+
+const { analyzeDependencies } = __mod_deps;
+const { computeRisk, parseLocal, DONE } = __mod_risk;
+const RAID_TYPES = ["Risk", "Assumption", "Issue", "Dependency"];
+const RAID_STATUS = { Risk: ["Open", "Mitigating", "Closed"], Assumption: ["Unchecked", "Confirmed", "Wrong"], Issue: ["Open", "In progress", "Closed"], Dependency: ["Open", "In progress", "Closed"] };
+const RAID_RATINGS = ["High", "Medium", "Low"];
+const CLOSED = new Set(["Closed", "Confirmed", "Wrong"]);
+const RANK = { High: 0, Medium: 1, Low: 2 };
+
+const clip = (s, n) => String(s ?? "").replace(/\s+/g, " ").trim().slice(0, n);
+const asOf = (list, v, fallback) => (list.includes(v) ? v : fallback);
+
+/** An empty item of one type. `source` is set on items that came from a suggestion. */
+function emptyRaid(type = "Risk", now = Date.now()) {
+  const t = asOf(RAID_TYPES, type, "Risk");
+  return { id: "x" + now.toString(36) + Math.random().toString(36).slice(2, 5), type: t, title: "", owner: "", due: "", status: RAID_STATUS[t][0], rating: "Medium", response: "", source: "" };
+}
+
+/** Make any saved value safe to use: unknown types and statuses fall back, text is trimmed, junk is dropped. */
+function cleanRaid(list) {
+  const out = [];
+  for (const r of Array.isArray(list) ? list : []) {
+    if (!r || typeof r !== "object") continue;
+    const type = asOf(RAID_TYPES, r.type, "Risk");
+    out.push({
+      id: clip(r.id, 40) || emptyRaid(type).id, type, title: clip(r.title, 200), owner: clip(r.owner, 80), due: clip(r.due, 20),
+      status: asOf(RAID_STATUS[type], r.status, RAID_STATUS[type][0]), rating: asOf(RAID_RATINGS, r.rating, "Medium"),
+      response: clip(r.response, 500), source: clip(r.source, 120),
+    });
+  }
+  return out;
+}
+
+const isClosedRaid = (r) => CLOSED.has(r.status);
+const isOverdue = (r, now = Date.now()) => !isClosedRaid(r) && parseLocal(r.due) !== null && parseLocal(r.due) < now;
+
+/** Counts for the header line: open items by type, how many are high, how many are overdue, how many have no owner. */
+function summarizeRaid(list, now = Date.now()) {
+  const open = (list || []).filter((r) => !isClosedRaid(r));
+  return {
+    open: open.length,
+    byType: Object.fromEntries(RAID_TYPES.map((t) => [t, open.filter((r) => r.type === t).length])),
+    high: open.filter((r) => r.rating === "High").length,
+    overdue: open.filter((r) => isOverdue(r, now)).length,
+    noOwner: open.filter((r) => !r.owner.trim()).length,
+    closed: (list || []).length - open.length,
+  };
+}
+
+/* ---------- suggestions ---------- */
+
+const sug = (type, title, source, rating, response = "", owner = "", due = "") => ({ type, title: clip(title, 200), source, rating, response: clip(response, 500), owner: clip(owner, 80), due });
+
+/**
+ * Where suggestions come from. Each build() gets the plan and a context { now, clashes } and returns an
+ * array of suggestions. `source` must be stable, because it is how a suggestion is recognised later.
+ */
+const SOURCES = [
+  { id: "handoffs", build(plan, { now }) {
+    const dep = analyzeDependencies(plan.tickets || [], plan.handoffs || [], now, parseLocal(plan.when?.freezeAt));
+    return dep.overdue.map((h) => sug("Dependency", `${h.what} (${h.from || "?"} to ${h.to || "?"}) is overdue`, `handoff|${clip(h.what, 60)}|${h.from}|${h.to}`, "High", "Ask the owner for a new date.", (plan.handoffs.find((x) => x.what === h.what) || {}).owner, h.due));
+  } },
+  { id: "waiting", build(plan, { now }) {
+    const dep = analyzeDependencies(plan.tickets || [], plan.handoffs || [], now, parseLocal(plan.when?.freezeAt));
+    return dep.waiting.slice(0, 5).map((w) => sug("Dependency", `${w.key} waits on ${w.on.map((x) => (x.kind === "handoff" ? x.what : x.key)).join(", ")}`, `waiting|${w.key}`, w.status === "In progress" || w.status === "In review" ? "High" : "Medium", "Finish the blocking work first, or agree a way to work in parallel."));
+  } },
+  { id: "bugs", build(plan) {
+    return (plan.tickets || []).filter((t) => t.type === "Bug" && t.status !== DONE && ["P0", "P1"].includes(t.priority))
+      .map((t) => sug("Issue", `${t.key}: ${clip(t.summary, 90) || "open bug"} (${t.priority})`, `bug|${t.key}`, "High", "Fix before the freeze, or agree a waiver.", t.assignee));
+  } },
+  { id: "checks", build(plan) {
+    const c = plan.checks || {};
+    return [["migration", "The migration dry run failed"], ["rollback", "The rollback has not been rehearsed or it failed"]].filter(([k]) => c[k] === "fail")
+      .map(([k, text]) => sug("Issue", text, `check|${k}`, "High", "Re-run it and record the result.", plan.people?.engineeringOwner));
+  } },
+  { id: "risk", build(plan, { now }) {
+    let r; try { r = computeRisk(plan, now); } catch { return []; }
+    return r.factors.filter((f) => f.max > 0 && f.points / f.max >= 0.6 && !["dependencies", "blockers"].includes(f.id))
+      .map((f) => sug("Risk", `${f.label}: ${clip(f.detail, 120)}`, `risk|${f.id}`, f.points / f.max >= 0.85 ? "High" : "Medium", f.advice));
+  } },
+  { id: "schedule", build(plan, { clashes = [] }) {
+    return clashes.filter((c) => c.severity !== "low").slice(0, 3).map((c) => sug("Risk", c.text, `clash|${c.id}`, c.severity === "high" ? "High" : "Medium", "Agree which release moves, or add a safeguard."));
+  } },
+];
+
+/**
+ * Suggested items for one release, minus anything already in the log or dismissed.
+ *  ctx { now, clashes, max }  clashes come from schedule.js conflictsFor(); max caps the list (default 8), most serious first
+ */
+function suggestRaid(plan, ctx = {}) {
+  const c = { now: Date.now(), clashes: [], max: 8, ...ctx };
+  const have = new Set([...(plan.raid || []).map((r) => r.source).filter(Boolean), ...(plan.raidDismissed || [])]);
+  const out = [];
+  for (const s of SOURCES) {
+    let list = [];
+    try { list = s.build(plan, c); } catch { list = []; }
+    for (const x of list) if (x.source && !have.has(x.source)) { have.add(x.source); out.push(x); }
+  }
+  return out.sort((a, b) => RANK[a.rating] - RANK[b.rating]).slice(0, c.max);
+}
+
+/** Turn a suggestion into a real item, ready to push onto plan.raid. */
+function acceptSuggestion(s, now = Date.now()) {
+  return { ...emptyRaid(s.type, now), title: s.title, owner: s.owner || "", due: s.due || "", rating: asOf(RAID_RATINGS, s.rating, "Medium"), response: s.response || "", source: s.source };
+}
+
+/** Check AI-written suggestions before they reach the screen. Anything that does not fit the lists is dropped. */
+function validateRaidSuggestions(raw, plan, max = 8) {
+  const have = new Set([...(plan.raid || []).map((r) => r.source).filter(Boolean), ...(plan.raidDismissed || [])]);
+  const out = [];
+  for (const x of Array.isArray(raw) ? raw : []) {
+    if (!x || !RAID_TYPES.includes(x.type)) continue;
+    const title = clip(x.title, 200);
+    if (!title) continue;
+    const source = `ai|${x.type}|${title.toLowerCase().slice(0, 60)}`;
+    if (have.has(source)) continue;
+    have.add(source);
+    out.push(sug(x.type, title, source, asOf(RAID_RATINGS, x.rating, "Medium"), x.response));
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+/* ---------- across releases ---------- */
+
+/**
+ * Every item from every release, for the RAID page.
+ *  plans    release plans with an `id`
+ *  options  { now, includeClosed, closedReleases }  closed releases are left out unless includeClosed
+ * Items sorted: overdue first, then by rating, then by due date.
+ */
+function buildRaidView(plans, { now = Date.now(), includeClosed = false } = {}) {
+  const rows = [];
+  for (const p of (plans || []).filter(Boolean)) {
+    const releaseClosed = Boolean(p.outcome?.status);
+    for (const r of cleanRaid(p.raid)) {
+      if (!includeClosed && (isClosedRaid(r) || releaseClosed)) continue;
+      rows.push({ ...r, releaseId: String(p.id ?? ""), releaseName: clip(p.release?.name, 80) || "Untitled release", overdue: isOverdue(r, now), dueMs: parseLocal(r.due) });
+    }
+  }
+  rows.sort((a, b) => Number(b.overdue) - Number(a.overdue) || RANK[a.rating] - RANK[b.rating] || (a.dueMs ?? Infinity) - (b.dueMs ?? Infinity));
+  const owners = [...new Set(rows.map((r) => r.owner).filter(Boolean))].sort();
+  return { rows, owners, summary: summarizeRaid(rows, now) };
+}
+
+/** Narrow the rows of buildRaidView(). Any filter left out (or "") lets everything through. */
+function filterRaid(rows, { type = "", owner = "", releaseId = "", rating = "" } = {}) {
+  return rows.filter((r) => (!type || r.type === type) && (!owner || (owner === "(none)" ? !r.owner : r.owner === owner)) && (!releaseId || r.releaseId === releaseId) && (!rating || r.rating === rating));
+}
+
+return { RAID_TYPES, RAID_STATUS, RAID_RATINGS, emptyRaid, cleanRaid, isClosedRaid, isOverdue, summarizeRaid, SOURCES, suggestRaid, acceptSuggestion, validateRaidSuggestions, buildRaidView, filterRaid };
+})();
 const __mod_uikit = (() => {
 // Small helpers shared by the planner page and its panels.
 const $ = (s, r = document) => r.querySelector(s);
@@ -2089,7 +2265,26 @@ function renderHistory(rows, sum, currentId) {
   return `<section class="panel" id="history-panel">${head}<div class="row-actions">${tally}</div>${sum.shippedAgainstCall ? `<div class="msg">${sum.shippedAgainstCall} shipped while the call was HOLD or NO-GO.</div>` : ""}${calls ? `<ul class="plain">${calls}</ul>` : ""}<div class="tablewrap"><table class="tbl"><thead><tr><th>Release</th><th>Outcome</th><th>Call when closed</th><th></th></tr></thead><tbody>${body}</tbody></table></div></section>`;
 }
 
-return { ratioColor, FC_CHIP, FC_TEXT, renderVerdict, renderRisk, renderPoints, renderDeps, renderCriteria, renderBrief, renderHistory };
+/**
+ * The RAID digest in the results column: what is open and risky right now, plus suggestions to accept.
+ *  sum          from summarizeRaid()
+ *  top          the open items worth showing (already sorted and cut to a few)
+ *  suggestions  suggested items, each with a `source`
+ *  ctx          { canEdit, canAi, busy, msg }
+ */
+function renderRaid(sum, top, suggestions, { canEdit = true, canAi = false, busy = false, msg = "" } = {}) {
+  const chips = [`<span class="chip s-pending"><i></i>${sum.open} open</span>`, sum.high ? `<span class="chip s-fail"><i></i>${sum.high} high</span>` : "", sum.overdue ? `<span class="chip s-fail"><i></i>${sum.overdue} overdue</span>` : "", sum.noOwner ? `<span class="chip s-warn"><i></i>${sum.noOwner} without an owner</span>` : ""].filter(Boolean).join(" ");
+  const types = ["Risk", "Assumption", "Issue", "Dependency"].filter((t) => sum.byType[t]).map((t) => `${sum.byType[t]} ${t.toLowerCase()}${sum.byType[t] === 1 ? "" : "s"}`).join(", ");
+  const list = top.length ? `<ul class="plain">${top.map((r) => `<li><span class="chip s-${r.rating === "High" ? "fail" : r.rating === "Medium" ? "warn" : "pending"}">${esc(r.type)}</span> ${esc(r.title)}${r.owner ? ` <span class="msg">${esc(r.owner)}</span>` : ` <span class="msg">no owner</span>`}${r.overdue ? ` <span class="msg" style="color:var(--bad)">overdue</span>` : ""}</li>`).join("")}</ul>` : "";
+  const dis = canEdit ? "" : " disabled";
+  const sugg = suggestions.length
+    ? `<h3 class="ag-h">Suggested from this release (${suggestions.length})</h3><div class="ai-list">${suggestions.map((x) => `<div class="ai-item"><div><strong>${esc(x.title)}</strong> <span class="chip s-${x.rating === "High" ? "fail" : x.rating === "Medium" ? "warn" : "pending"}">${esc(x.type)}</span>${x.response ? `<div class="note">${esc(x.response)}</div>` : ""}</div><div class="row-actions"><button class="btn small primary" type="button" data-act="raid-accept" data-src="${esc(x.source)}"${dis}>Add</button><button class="btn small" type="button" data-act="raid-dismiss" data-src="${esc(x.source)}"${dis}>Dismiss</button></div></div>`).join("")}</div><div class="row-actions">${suggestions.length > 1 ? `<button class="btn small" type="button" data-act="raid-accept-all"${dis}>Add all</button>` : ""}</div>`
+    : `<div class="msg">Nothing new to suggest from the tickets, handoffs, risk score and calendar.</div>`;
+  const ai = canAi ? `<div class="row-actions"><button class="btn small" type="button" data-act="raid-ai"${busy || !canEdit ? " disabled" : ""} title="Asks Claude to read the tickets and handoffs and suggest risks and assumptions you have not listed. It only suggests.">${busy ? "Thinking…" : "Ask AI for more"}</button><span class="msg">${esc(msg)}</span></div>` : "";
+  return `<section class="panel" id="raid-panel"><div class="panel-head"><h2>RAID log</h2><span class="note">Risks, assumptions, issues and dependencies. Edit them under RAID on the left.</span></div><div class="row-actions">${chips}</div>${types ? `<div class="msg">${esc(types)}.</div>` : `<div class="msg">Nothing logged yet.</div>`}${list}${sugg}${ai}</section>`;
+}
+
+return { ratioColor, FC_CHIP, FC_TEXT, renderVerdict, renderRisk, renderPoints, renderDeps, renderCriteria, renderBrief, renderHistory, renderRaid };
 })();
 const __mod_assist = (() => {
 // AI helpers and the agent panel. They suggest and draft; a person approves everything.
@@ -2282,7 +2477,8 @@ const { computeRisk } = __mod_risk;
 const { analyzeDependencies, parseKeys, TEAMS, HANDOFF_STATUS } = __mod_deps;
 const { mergeTickets, defaultPlan, blankPlan, nextPlan, applyTemplate, generateRunbook, syncHandoffSteps, isClosed, OUTCOMES, planToSnapshot, planState, planConfig, briefMarkdown, reportModel, reportHtml, reportDocument, reportWord, statusModel, TYPES, PRIORITIES, TICKET_TYPES, STATUSES, AREAS, ENVIRONMENTS, STRATEGIES, CHECK_STATES, PHASES, ROLE_KEYS, TEMPLATES } = __mod_plan;
 const { $, esc } = __mod_uikit;
-const { renderVerdict, renderRisk, renderPoints, renderDeps, renderCriteria, renderBrief, renderHistory } = __mod_panels;
+const { renderVerdict, renderRisk, renderPoints, renderDeps, renderCriteria, renderBrief, renderHistory, renderRaid } = __mod_panels;
+const { RAID_TYPES, RAID_STATUS, RAID_RATINGS, emptyRaid, summarizeRaid, isOverdue, isClosedRaid, suggestRaid, acceptSuggestion } = __mod_raid;
 const { applyOutcomeChange, historyRows, historySummary } = __mod_history;
 const { createAssist } = __mod_assist;
 const { buildSchedule, conflictsFor } = __mod_schedule;
@@ -2319,7 +2515,7 @@ function fillDefaults(def, val) {
 
 const newId = () => "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 // What a saved plan is filled in from. Handoffs start empty, so an older plan never picks up the example's.
-const FILL = () => ({ ...defaultPlan(), handoffs: [] });
+const FILL = () => ({ ...defaultPlan(), handoffs: [], raid: [] });
 const validPlan = (p) => Boolean(p && Array.isArray(p.tickets) && p.release);
 
 function loadLib() {
@@ -2633,6 +2829,10 @@ function renderInputs() {
     `<div class="tablewrap"><table class="tbl" style="min-width:1000px"><thead><tr><th>Handed over</th><th>From</th><th>To</th><th>Owner</th><th>Due</th><th>Status</th><th title="Ticket keys, separated by commas">Blocks</th><th></th></tr></thead><tbody id="handoffs-body"></tbody></table></div>
      <div class="row-actions"><button class="btn small" type="button" data-act="add-handoff">Add handoff</button><span class="msg">Ticket-to-ticket dependencies go in the Blocked by column above.</span></div>`);
 
+  html += section("raid", "RAID log", "Risks, assumptions, issues and dependencies for this release. Give each an owner and a date. The panel on the right suggests items from your tickets, handoffs and calendar.",
+    `<div class="tablewrap"><table class="tbl" style="min-width:1100px"><thead><tr><th>Type</th><th>What</th><th>Owner</th><th>Due</th><th>Rating</th><th>Status</th><th>What we are doing about it</th><th></th></tr></thead><tbody id="raid-body"></tbody></table></div>
+     <div class="row-actions"><button class="btn small" type="button" data-act="add-raid">Add item</button><span class="msg" id="raid-sum"></span></div>`);
+
   html += section("signals", "Quality signals", "What the engine checks against budgets. With GitHub and CI connected these fill in on their own.",
     SIGNAL_GROUPS.map((g) => `<div class="sec-head"><h2>${esc(g.title)}</h2></div><div class="fields">${g.fields.map(fieldHtml).join("")}</div>`).join(""));
 
@@ -2655,6 +2855,7 @@ function renderInputs() {
   renderPeopleList();
   renderTickets();
   renderHandoffs();
+  renderRaidTable();
   renderRunbook();
   renderClear(true);
   updateJiraButton();
@@ -2685,6 +2886,27 @@ function renderHandoffs() {
       <td><input class="bb mono" type="text" data-p="${b}.blocks" value="${esc(h.blocks)}" placeholder="REL-1, REL-2" aria-label="Tickets this blocks"></td>
       <td><button class="icon-btn" type="button" data-act="del-handoff" data-i="${i}" aria-label="Remove handoff">×</button></td></tr>`;
   }).join("") || `<tr><td colspan="8" class="msg">No handoffs yet. Add one for anything a team must hand over before another can start, such as designs before tickets, or a merge before QA.</td></tr>`;
+}
+
+function renderRaidTable() {
+  const body = $("#raid-body");
+  if (!body) return;
+  P.raid ||= [];
+  const now = Date.now();
+  body.innerHTML = P.raid.map((r, i) => {
+    const b = `raid.${i}`;
+    return `<tr${isClosedRaid(r) ? ' class="done"' : ""}>
+      <td>${selectHtml(`${b}.type`, RAID_TYPES, r.type, `class="tm" aria-label="Type"`)}</td>
+      <td><input class="s" type="text" data-p="${b}.title" value="${esc(r.title)}" placeholder="What could go wrong, or what must be true" aria-label="What"></td>
+      <td><input class="ow" type="text" list="people-list" data-p="${b}.owner" value="${esc(r.owner)}" aria-label="Owner"></td>
+      <td><input class="wh" type="datetime-local" data-p="${b}.due" value="${esc(r.due)}" aria-label="Due">${isOverdue(r, now) ? `<div class="msg" style="color:var(--bad)">overdue</div>` : ""}</td>
+      <td>${selectHtml(`${b}.rating`, RAID_RATINGS, r.rating, `class="st" aria-label="Rating"`)}</td>
+      <td>${selectHtml(`${b}.status`, RAID_STATUS[r.type] || RAID_STATUS.Risk, r.status, `class="st" aria-label="Status"`)}</td>
+      <td><input class="s" type="text" data-p="${b}.response" value="${esc(r.response)}" placeholder="Mitigation, fix or check" aria-label="Response"></td>
+      <td><button class="icon-btn" type="button" data-act="del-raid" data-i="${i}" aria-label="Remove item">×</button></td></tr>`;
+  }).join("") || `<tr><td colspan="8" class="msg">Nothing logged yet. Add an item, or accept a suggestion on the right.</td></tr>`;
+  const sum = summarizeRaid(P.raid, now), el = $("#raid-sum");
+  if (el) el.textContent = P.raid.length ? `${sum.open} open, ${sum.high} high, ${sum.overdue} overdue.` : "";
 }
 
 function renderTickets() {
@@ -2857,6 +3079,18 @@ function renderSumbar({ result, risk, now }) {
 }
 
 
+// RAID: what the panel on the right shows. Rule-based suggestions are worked out every time; AI ones are kept until the release changes.
+const RA = { forId: "", ai: [], busy: false, msg: "" };
+function raidPanel(clashes) {
+  if (RA.forId !== lib.current) Object.assign(RA, { forId: lib.current, ai: [], busy: false, msg: "" });
+  const now = Date.now(), taken = new Set([...(P.raid || []).map((r) => r.source), ...(P.raidDismissed || [])]);
+  const suggestions = [...suggestRaid(P, { now, clashes }), ...RA.ai.filter((x) => !taken.has(x.source))];
+  const open = (P.raid || []).filter((r) => !isClosedRaid(r)).map((r) => ({ ...r, overdue: isOverdue(r, now) }))
+    .sort((a, b) => Number(b.overdue) - Number(a.overdue) || RAID_RATINGS.indexOf(a.rating) - RAID_RATINGS.indexOf(b.rating)).slice(0, 5);
+  RA.suggestions = suggestions;
+  return renderRaid(summarizeRaid(P.raid || [], now), open, suggestions, { canEdit: !READONLY && !readOnly(), canAi: Boolean(remote && integrations.server), busy: RA.busy, msg: RA.msg });
+}
+
 let last = null;
 function renderResults() {
   try {
@@ -2870,10 +3104,11 @@ function renderResults() {
   const fresh = !P.release.name.trim() && P.tickets.length === 0 && !Number(P.signals.ci.total);
   const roNote = READONLY ? `<div class="banner"><strong>View only.</strong><span>This is an example release with invented names and numbers. You can look at everything, but nothing can be changed or saved.</span></div>` : "";
   const closedNote = isClosed(P) ? `<div class="banner"><strong>Closed: ${esc(P.outcome.status)}.</strong><span>Auto-refresh and alerts are off for this release. Clear the outcome under After the release to reopen it.</span></div>` : "";
-  const clashNote = isClosed(P) ? "" : renderClashBanner(conflictsFor(buildSchedule(lib.order.map((id) => ({ ...(id === lib.current ? P : lib.items[id]), id })), { now: Date.now() }), lib.current), lib.current, { calendarHref: STANDALONE ? "" : "/calendar.html" });
+  const clashes = isClosed(P) || READONLY ? [] : conflictsFor(buildSchedule(lib.order.map((id) => ({ ...(id === lib.current ? P : lib.items[id]), id })), { now: Date.now() }), lib.current);
+  const clashNote = renderClashBanner(clashes, lib.current, { calendarHref: STANDALONE ? "" : "/calendar.html" });
   const note = roNote + closedNote + clashNote + (fresh ? `<div class="banner"><strong>New release.</strong><span>Name it and set the dates on the left, then add tickets or pull them from Jira. The call stays HOLD until the checks have data, and anything unknown counts as risk.</span></div>` : "");
   renderRelSelect();
-  $("#results").innerHTML = note + renderVerdict(last) + renderAgent() + renderRisk(last) + renderPoints(last) + renderDeps(last) + renderCriteria(last, { P, openWaive, waiveError }) + renderBrief(last, { STANDALONE }) + renderHistory(historyRows(lib.order.map((id) => ({ ...(id === lib.current ? P : lib.items[id]), id }))), historySummary(historyRows(lib.order.map((id) => ({ ...(id === lib.current ? P : lib.items[id]), id })))), lib.current);
+  $("#results").innerHTML = note + renderVerdict(last) + renderAgent() + renderRisk(last) + renderPoints(last) + renderDeps(last) + raidPanel(clashes) + renderCriteria(last, { P, openWaive, waiveError }) + renderBrief(last, { STANDALONE }) + renderHistory(historyRows(lib.order.map((id) => ({ ...(id === lib.current ? P : lib.items[id]), id }))), historySummary(historyRows(lib.order.map((id) => ({ ...(id === lib.current ? P : lib.items[id]), id })))), lib.current);
   const p = last.risk.points;
   const sum = $("#tk-sum");
   if (sum) sum.textContent = `${p.tickets} tickets · ${p.total} points · ${p.done} done`;
@@ -2910,6 +3145,9 @@ function onEdit(e) {
     setPath(P, el.dataset.p, el.value);
   }
   if (/^(people|extraPeople)\./.test(el.dataset.p)) renderPeopleList();
+  const rt = /^raid\.(\d+)\.type$/.exec(el.dataset.p);
+  if (rt) { const r = P.raid[Number(rt[1])]; r.status = RAID_STATUS[r.type][0]; renderRaidTable(); }
+  else if (/^raid\.\d+\.(status|due)$/.test(el.dataset.p)) renderRaidTable();
   if (el.dataset.p === "outcome.status" && applyOutcomeChange(P, Date.now())) { const at = $("#f-outcome-at"); if (at) at.value = P.outcome.at || ""; }
   changed();
 }
@@ -3011,6 +3249,27 @@ document.addEventListener("click", async (e) => {
     (P.handoffs ||= []).push({ what: "", from: "Design", to: "Frontend", owner: "", due: P.when.freezeAt || "", status: "Not started", blocks: "" });
     renderHandoffs(); changed();
     const rows = document.querySelectorAll("#handoffs-body tr"); rows[rows.length - 1]?.querySelector("input")?.focus();
+  }
+  else if (act === "add-raid") {
+    (P.raid ||= []).push(emptyRaid("Risk", Date.now()));
+    renderRaidTable(); changed();
+    const rows = document.querySelectorAll("#raid-body tr"); rows[rows.length - 1]?.querySelector("input")?.focus();
+  }
+  else if (act === "del-raid") { P.raid.splice(i, 1); renderRaidTable(); changed(); }
+  else if (act === "raid-accept" || act === "raid-dismiss" || act === "raid-accept-all") {
+    const picked = act === "raid-accept-all" ? [...(RA.suggestions || [])] : (RA.suggestions || []).filter((x) => x.source === a.dataset.src);
+    for (const x of picked) { if (act === "raid-dismiss") (P.raidDismissed ||= []).push(x.source); else (P.raid ||= []).push(acceptSuggestion(x, Date.now())); }
+    RA.ai = RA.ai.filter((x) => !picked.some((y) => y.source === x.source));
+    renderRaidTable(); renderResults(); changed();
+  }
+  else if (act === "raid-ai") {
+    RA.busy = true; RA.msg = ""; renderResults();
+    try {
+      const r = await agentPost("/api/ai/raid", { plan: P });
+      RA.ai = r.suggestions || [];
+      RA.msg = r.mode !== "live" ? "Demo mode: no AI key is set, so only the rule-based suggestions are available." : RA.ai.length ? "" : "Nothing new found.";
+    } catch (err) { RA.msg = err.message; }
+    RA.busy = false; renderResults();
   }
   else if (act === "del-handoff") { P.handoffs.splice(i, 1); renderHandoffs(); changed(); }
   else if (act === "add-step") { P.runbook.push({ id: "s" + Date.now(), phase: "Deploy", step: "", owner: P.people.releaseManager, at: P.when.deployAt, status: "todo" }); renderRunbook(); changed(); }

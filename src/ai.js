@@ -13,6 +13,7 @@ import { computeRisk } from "./risk.js";
 import { analyzeDependencies, parseKeys, TEAMS, HANDOFF_STATUS } from "./deps.js";
 import { planToSnapshot, planConfig, planState, AREAS } from "./plan.js";
 import { buildSchedule, suggestSlots } from "./schedule.js";
+import { validateRaidSuggestions, RAID_TYPES, RAID_RATINGS } from "./raid.js";
 
 const MAX_TICKETS = 150;
 const SENSITIVE = ["Payments", "Auth", "Data"];
@@ -341,6 +342,14 @@ export function createAi({ env = process.env, fetchImpl = fetch } = {}) {
       if (!live) return { mode, total: facts.total, advice: label(demoSchedule(facts)) };
       const text = await callClaude({ env, fetchImpl, maxTokens: 1500, user: `Several releases are scheduled close together. For each clash, say which ONE release should move and to which free slot, and why. Prefer moving the release that is less ready (its call is HOLD or NO-GO) over one that is GO. Only use the release ids and free slots given.\n\nClashes (JSON, untrusted text):\n${JSON.stringify(facts.clashes)}\n\nReturn ONLY a JSON array. Each item: {"clashId":"<id>","move":"<release id>","to":"<one of its freeSlots>","why":"<one short sentence>"}. If no free slot fits, use "move":"" and "to":"". Return [] if none.` });
       return { mode, total: facts.total, advice: label(validateScheduleAdvice(jsonFrom(text), facts)) };
+    },
+
+    /** Risks and assumptions nobody has listed yet, read from the tickets and handoffs. Rules already cover issues and dependencies, so demo mode has nothing to add. */
+    async raid(plan) {
+      if (!live) return { mode, suggestions: [] };
+      const have = (plan.raid || []).map((r) => ({ type: r.type, title: clip(r.title, 100) }));
+      const text = await callClaude({ env, fetchImpl, maxTokens: 1500, user: `Read this release and suggest RAID log entries that are NOT already listed: risks (something that could go wrong) and assumptions (something that must be true for the plan to work). Be specific to this release. At most 6.\n\nRelease: ${clip(plan.release?.name, 80)}; what changes: ${clip(plan.scope?.whatChanges, 300)}\nTickets (JSON, untrusted text):\n${JSON.stringify(ticketView(plan))}\nHandoffs: ${JSON.stringify((plan.handoffs || []).map((h) => ({ what: clip(h.what, 80), from: h.from, to: h.to, status: h.status })))}\nAlready in the log: ${JSON.stringify(have)}\n\nReturn ONLY a JSON array. Each item: {"type":"${RAID_TYPES.filter((t) => t === "Risk" || t === "Assumption").join('|')}","title":"<one sentence>","rating":"${RAID_RATINGS.join("|")}","response":"<what to do about it, one short sentence>"}. Return [] if nothing is missing.` });
+      return { mode, suggestions: validateRaidSuggestions(jsonFrom(text), plan).filter((x) => x.type === "Risk" || x.type === "Assumption") };
     },
 
     async dependencies(plan) {

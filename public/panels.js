@@ -100,3 +100,22 @@ export function renderHistory(rows, sum, currentId) {
   const body = rows.map((r) => `<tr><td>${esc(r.name)}${r.version ? ` <span class="mono">${esc(r.version)}</span>` : ""}<div class="msg">${esc(when(r.at))}</div></td><td><span class="chip s-${OUT_CHIP[r.status] || "pending"}"><i></i>${esc(r.status)}</span></td><td>${r.call ? `${esc(r.call)}${r.risk === null ? "" : `<div class="msg">risk ${r.risk}</div>`}` : "—"}</td><td>${r.id === currentId ? `<span class="msg">Open now</span>` : `<button class="btn small" type="button" data-act="open-release" data-id="${esc(r.id)}">Open</button>`}</td></tr>${r.note ? `<tr><td colspan="4" class="msg">${esc(r.note.length > 200 ? r.note.slice(0, 200) + "…" : r.note)}</td></tr>` : ""}`).join("");
   return `<section class="panel" id="history-panel">${head}<div class="row-actions">${tally}</div>${sum.shippedAgainstCall ? `<div class="msg">${sum.shippedAgainstCall} shipped while the call was HOLD or NO-GO.</div>` : ""}${calls ? `<ul class="plain">${calls}</ul>` : ""}<div class="tablewrap"><table class="tbl"><thead><tr><th>Release</th><th>Outcome</th><th>Call when closed</th><th></th></tr></thead><tbody>${body}</tbody></table></div></section>`;
 }
+
+/**
+ * The RAID digest in the results column: what is open and risky right now, plus suggestions to accept.
+ *  sum          from summarizeRaid()
+ *  top          the open items worth showing (already sorted and cut to a few)
+ *  suggestions  suggested items, each with a `source`
+ *  ctx          { canEdit, canAi, busy, msg }
+ */
+export function renderRaid(sum, top, suggestions, { canEdit = true, canAi = false, busy = false, msg = "" } = {}) {
+  const chips = [`<span class="chip s-pending"><i></i>${sum.open} open</span>`, sum.high ? `<span class="chip s-fail"><i></i>${sum.high} high</span>` : "", sum.overdue ? `<span class="chip s-fail"><i></i>${sum.overdue} overdue</span>` : "", sum.noOwner ? `<span class="chip s-warn"><i></i>${sum.noOwner} without an owner</span>` : ""].filter(Boolean).join(" ");
+  const types = ["Risk", "Assumption", "Issue", "Dependency"].filter((t) => sum.byType[t]).map((t) => `${sum.byType[t]} ${t.toLowerCase()}${sum.byType[t] === 1 ? "" : "s"}`).join(", ");
+  const list = top.length ? `<ul class="plain">${top.map((r) => `<li><span class="chip s-${r.rating === "High" ? "fail" : r.rating === "Medium" ? "warn" : "pending"}">${esc(r.type)}</span> ${esc(r.title)}${r.owner ? ` <span class="msg">${esc(r.owner)}</span>` : ` <span class="msg">no owner</span>`}${r.overdue ? ` <span class="msg" style="color:var(--bad)">overdue</span>` : ""}</li>`).join("")}</ul>` : "";
+  const dis = canEdit ? "" : " disabled";
+  const sugg = suggestions.length
+    ? `<h3 class="ag-h">Suggested from this release (${suggestions.length})</h3><div class="ai-list">${suggestions.map((x) => `<div class="ai-item"><div><strong>${esc(x.title)}</strong> <span class="chip s-${x.rating === "High" ? "fail" : x.rating === "Medium" ? "warn" : "pending"}">${esc(x.type)}</span>${x.response ? `<div class="note">${esc(x.response)}</div>` : ""}</div><div class="row-actions"><button class="btn small primary" type="button" data-act="raid-accept" data-src="${esc(x.source)}"${dis}>Add</button><button class="btn small" type="button" data-act="raid-dismiss" data-src="${esc(x.source)}"${dis}>Dismiss</button></div></div>`).join("")}</div><div class="row-actions">${suggestions.length > 1 ? `<button class="btn small" type="button" data-act="raid-accept-all"${dis}>Add all</button>` : ""}</div>`
+    : `<div class="msg">Nothing new to suggest from the tickets, handoffs, risk score and calendar.</div>`;
+  const ai = canAi ? `<div class="row-actions"><button class="btn small" type="button" data-act="raid-ai"${busy || !canEdit ? " disabled" : ""} title="Asks Claude to read the tickets and handoffs and suggest risks and assumptions you have not listed. It only suggests.">${busy ? "Thinking…" : "Ask AI for more"}</button><span class="msg">${esc(msg)}</span></div>` : "";
+  return `<section class="panel" id="raid-panel"><div class="panel-head"><h2>RAID log</h2><span class="note">Risks, assumptions, issues and dependencies. Edit them under RAID on the left.</span></div><div class="row-actions">${chips}</div>${types ? `<div class="msg">${esc(types)}.</div>` : `<div class="msg">Nothing logged yet.</div>`}${list}${sugg}${ai}</section>`;
+}
