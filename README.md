@@ -11,7 +11,7 @@ This edition is built for a team. Only people you invite can open it, each perso
 - **Using it:** [The problem](#the-problem) · [What it does](#what-it-does) · [Dependencies](#dependencies-what-waits-on-what) · [Every release](#using-it-for-every-release) · [Release docs](#release-docs)
 - **Automation:** [Auto-refresh and Slack alerts](#auto-refresh-and-slack-alerts) · [AI helpers](#ai-helpers) · [Agent](#agent-check-this-release)
 - **Running it:** [Sign-in and roles](#sign-in-roles-and-privacy) · [On your computer](#run-it-on-your-computer) · [For a team](#run-it-for-a-team) · [Online](#putting-it-online) · [Connect your tools](#connect-your-tools)
-- **Reference:** [How it works](#how-it-works) · [Risk model](#the-risk-model) · [Layout](#layout) · [Limits](#limits-to-know-about) · [Where it goes next](#where-it-goes-next) · [Demo script](#demo-script-three-minutes)
+- **Reference:** [How it works](#how-it-works) · [Risk model](#the-risk-model) · [Layout](#layout) · [Limits](#limits-to-know-about) · [Calendar](#release-calendar) · [Where it goes next](#where-it-goes-next) · [Demo script](#demo-script-three-minutes)
 
 ## The problem
 
@@ -119,6 +119,30 @@ When a release is done, open the last section on the left, **After the release**
 - **Duplicate** and **Start next release** always begin open.
 
 ![Release history: outcome counts, how the call held up, and each closed release](docs/history.png)
+
+## Release calendar
+
+Open **Calendar** in the top menu. Every open release sits on one timeline: a bar for the deploy window, a thin line for the freeze, a dot for the go/no-go meeting, and a red line for now. Pick 2, 4 or 8 weeks. Closed releases are hidden unless you tick the box.
+
+The tool checks every pair of open releases for five kinds of clash:
+
+| Clash | Level | Plain meaning |
+| --- | --- | --- |
+| Overlap | Clash | Two deploy windows run at the same time |
+| Too close | Close | Two deploys are less than 12 hours apart |
+| Shared people | Close | The same release manager, SRE or QA lead is on two deploys less than 24 hours apart |
+| Freeze clash | Close | A deploy lands inside another release's freeze, on the same repository |
+| Meeting clash | Heads up | Two go/no-go meetings within an hour, with the same release manager |
+
+Each clash lists free slots (same time of day, weekdays only, nothing else clashing) for moving either release. The open release also shows a banner in the planner when it clashes with another one. The agent writes a **Schedule clash** chase note into the Inbox for medium and high clashes.
+
+**AI here is optional and narrow.** The button **Ask AI which to move** (editors only) sends only the clashes, the call of each release, and the free slots. It never changes a date. Advice is checked: it must name a real clash, a real release and a slot that was offered, or it is dropped. With no clashes there is no AI call. Without an API key the same button uses a plain rule (move the release that deploys later).
+
+![Release calendar with clashes and AI advice](docs/calendar.png)
+
+![Planner banner for a release that clashes](docs/calendar-banner.png)
+
+**Change the rules.** The numbers (12 hours, 24 hours, which roles count as people) are in `DEFAULT_RULES` in `src/schedule.js`. To add a new kind of clash, add one entry to `CHECKS` in the same file: `{ id, severity, test(a, b, rules) }`. The calendar, banner, AI check and agent all read the result, so nothing else changes.
 
 ## Release docs
 
@@ -388,16 +412,19 @@ src/risk.js        story points, forecast, risk score (pure)
 src/deps.js        what waits on what: blockers, handoffs, cycles, chains (pure)
 src/plan.js        the plan, templates, runbook generator and handoff steps, brief (pure)
 src/history.js     release history: the call when closed, rows and summary (pure)
+src/schedule.js    release calendar: clash checks, rules, free slots (pure)
+src/schedule-view.js  calendar timeline, clash cards and planner banner as HTML (pure)
+src/html.js        the one escape helper shared by the pure view modules
 src/sources/       GitHub, Jira, and demo-data adapters
 src/server.js      HTTP server and JSON API
 src/auth.js        accounts, sessions, invites, roles (no dependencies)
-src/ai.js          AI helpers: status update, risk spotter, dependency finder (demo rules or Claude)
+src/ai.js          AI helpers: status update, risk spotter, dependency finder, schedule check (demo rules or Claude)
 src/agent.js       the agent: what changed since the last check, and the drafts (pure)
 src/agent-service.js  runs the agent, keeps the Inbox, applies your decisions
 src/jobs.js        the timer: Jira auto-refresh, Slack alerts, Auto checks
-public/            dashboard, planner, inbox, sign-in, people (plain JS, no build step)
+public/            dashboard, planner, calendar, inbox, sign-in, people (plain JS, no build step)
 public/plan-ui.js  the planner page; panels.js, assist.js and uikit.js hold the result panels, the AI and agent panel, and shared helpers
-test/              143 tests, including a mock GitHub, a mock Jira, a mock Slack and a mock AI service
+test/              172 tests, including a mock GitHub, a mock Jira, a mock Slack and a mock AI service
 scripts/           build-standalone.mjs makes the single-file planner
 ```
 
@@ -422,6 +449,7 @@ scripts/           build-standalone.mjs makes the single-file planner
 3. Trends over time in Release history (for example risk against outcome, by month).
 4. Let the agent read Jira descriptions and comments, and email chase notes with approval.
 5. Per-team criteria sets.
+6. Release calendar: drag a deploy bar to a new date, and show on-call and holiday calendars.
 
 ## Demo script (three minutes)
 

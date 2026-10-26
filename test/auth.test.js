@@ -251,6 +251,11 @@ test("AI helpers: signed-in editors only; viewers and visitors are refused", asy
   assert.equal((await call("POST", "/api/ai/risks", body, viewer)).status, 403);
   assert.equal((await call("POST", "/api/ai/dependencies", body, viewer)).status, 403);
   assert.equal((await call("POST", "/api/ai/briefing", body, editor)).status, 200);
+  assert.equal((await call("POST", "/api/ai/schedule", {})).status, 401);
+  assert.equal((await call("POST", "/api/ai/schedule", {}, viewer)).status, 403);
+  const sched = await call("POST", "/api/ai/schedule", {}, editor);
+  assert.equal(sched.status, 200);
+  assert.deepEqual((await sched.json()).advice, []); // no releases, so nothing to advise on
 });
 
 test("agent: viewers can read the Inbox but not run checks, switch Auto or decide items", async () => {

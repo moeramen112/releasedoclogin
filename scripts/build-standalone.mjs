@@ -1,5 +1,5 @@
 // Builds dist/release-planner.html: the planner as one self-contained page with no server.
-// It bundles deps.js, engine.js, risk.js, plan.js, history.js, uikit.js, panels.js, assist.js and plan-ui.js, each in its own scope so names cannot collide.
+// It bundles deps.js, engine.js, risk.js, plan.js, history.js, html.js, schedule.js, schedule-view.js, uikit.js, panels.js, assist.js and plan-ui.js, each in its own scope so names cannot collide.
 // Run: node scripts/build-standalone.mjs
 
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -26,10 +26,13 @@ const scripts = [
   wrap("risk", read("src/risk.js")),
   wrap("plan", read("src/plan.js")),
   wrap("history", read("src/history.js")),
+  wrap("html", read("src/html.js")),
+  wrap("schedule", read("src/schedule.js")),
+  wrap("schedule-view", read("src/schedule-view.js")),
   wrap("uikit", read("public/uikit.js")),
   wrap("panels", read("public/panels.js")),
   wrap("assist", read("public/assist.js")),
-  `window.__STANDALONE = true;\n(() => {\n${read("public/plan-ui.js").replace(/function download\([^)]*\) \{[\s\S]*?\n\}\n/, "function download() {} // file downloads are not available in an embedded page\n").replace(/^import\s+\{([^}]+)\}\s+from\s+"[^"]*?([\w-]+)\.js";?\s*$/gm, (_, names, mod) => `const {${names}} = __mod_${mod};`)}\n})();`,
+  `window.__STANDALONE = true;\n(() => {\n${read("public/plan-ui.js").replace(/function download\([^)]*\) \{[\s\S]*?\n\}\n/, "function download() {} // file downloads are not available in an embedded page\n").replace(/^import\s+\{([^}]+)\}\s+from\s+"[^"]*?([\w-]+)\.js";?\s*$/gm, (_, names, mod) => `const {${names}} = __mod_${mod.replace(/-/g, "_")};`)}\n})();`,
 ].join("\n");
 
 const headParts = `<title>Release Planner</title>

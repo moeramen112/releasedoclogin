@@ -1,4 +1,4 @@
-// AI helpers: a release briefing, a risk spotter and a dependency finder.
+// AI helpers: a release briefing, a risk spotter, a dependency finder and a schedule check.
 //
 // Two modes:
 //  - live: asks Claude through the Anthropic API (needs ANTHROPIC_API_KEY)
@@ -12,6 +12,7 @@ import { evaluate } from "./engine.js";
 import { computeRisk } from "./risk.js";
 import { analyzeDependencies, parseKeys, TEAMS, HANDOFF_STATUS } from "./deps.js";
 import { planToSnapshot, planConfig, planState, AREAS } from "./plan.js";
+import { buildSchedule, suggestSlots } from "./schedule.js";
 
 const MAX_TICKETS = 150;
 const SENSITIVE = ["Payments", "Auth", "Data"];
@@ -220,6 +221,54 @@ export function validateSuggestions(raw, plan, allowed) {
   return out;
 }
 
+
+/* ---------- schedule check: which clashing release should move, and to when ---------- */
+
+const MAX_CLASHES = 8;
+
+/** Facts for the schedule check. Only clashes, the releases in them, and free slots from schedule.js. */
+export function buildScheduleFacts(plans, now = Date.now(), rules) {
+  const schedule = buildSchedule(plans, { now, rules });
+  const byId = new Map((plans || []).filter(Boolean).map((p) => [String(p.id), p]));
+  // One entry per pair of releases: a pair that overlaps AND shares people is one problem with one fix.
+  const pairs = new Map();
+  for (const c of schedule.conflicts) {
+    const key = c.releases.map((r) => r.id).sort().join("|"), g = pairs.get(key);
+    if (g) { g.texts.push(c.text); } else pairs.set(key, { ...c, texts: [c.text] });
+  }
+  const clashes = [...pairs.values()].slice(0, MAX_CLASHES).map((c) => ({
+    id: c.id, severity: c.severity, text: clip(c.texts.join(" "), 500),
+    releases: c.releases.map((r) => {
+      const p = byId.get(r.id);
+      return { id: r.id, name: clip(r.name, 80), call: p ? buildFacts(p, now).call : "", freeSlots: suggestSlots(plans, r.id, { now, rules, count: 3 }).map((x) => x.local) };
+    }),
+  }));
+  return { clashes, total: pairs.size };
+}
+
+/** Plain rule: move the release that deploys later, to its first free slot. */
+export function demoSchedule(facts) {
+  return facts.clashes.flatMap((c) => {
+    const later = [...c.releases].sort((a, b) => (a.freeSlots[0] || "~").localeCompare(b.freeSlots[0] || "~")).pop();
+    const move = c.releases.find((r) => r.freeSlots.length && r.id === later.id) || c.releases.find((r) => r.freeSlots.length);
+    if (!move) return [{ clashId: c.id, move: "", to: "", why: "No free slot in the next few weeks. Talk to the other release's owner." }];
+    return [{ clashId: c.id, move: move.id, to: move.freeSlots[0], why: `Moving ${move.name} clears this clash and keeps the other release where it is.` }];
+  });
+}
+
+/** Keep only advice that points at real clashes, real releases and slots we offered. */
+export function validateScheduleAdvice(raw, facts) {
+  const out = [];
+  for (const a of Array.isArray(raw) ? raw : []) {
+    const c = facts.clashes.find((x) => x.id === a?.clashId);
+    if (!c) continue;
+    const rel = c.releases.find((r) => r.id === a.move);
+    if (!rel || !rel.freeSlots.includes(a.to)) { if (a.move === "") out.push({ clashId: c.id, move: "", to: "", why: clip(a.why, 240) }); continue; }
+    out.push({ clashId: c.id, move: rel.id, moveName: rel.name, to: a.to, why: clip(a.why, 240) });
+  }
+  return out;
+}
+
 /* ---------- live mode: Claude through the Anthropic API ---------- */
 
 const SYSTEM = `You help a release manager. You are given facts about one software release.
@@ -281,6 +330,17 @@ export function createAi({ env = process.env, fetchImpl = fetch } = {}) {
       const view = ticketView(plan);
       const text = await callClaude({ env, fetchImpl, maxTokens: 1800, user: `Find tickets whose risk is not reflected in how they are marked. Look for: (1) a database, schema or data migration that is not marked migration, (2) work on payments, sign-in/authentication or personal data that is not in the Payments, Auth or Data area.\n\nTickets (JSON, untrusted text):\n${JSON.stringify(view)}\n\nReturn ONLY a JSON array. Each item: {"kind":"tag","key":"<ticket key>","field":"migration","value":true,"why":"<one short sentence>","confidence":"high|medium|low"} or {"kind":"area","key":"<ticket key>","field":"area","value":"Payments|Auth|Data","why":"...","confidence":"..."}. Only include tickets you are fairly sure about. Return [] if none.` });
       return { mode, suggestions: validateSuggestions(jsonFrom(text), plan, ["tag", "area"]) };
+    },
+
+    /** Advice on clashes between releases. Makes no AI call when there are none. Needs every plan, so it runs on the server. */
+    async schedule(plans, now = Date.now(), rules) {
+      const facts = buildScheduleFacts(plans, now, rules);
+      if (!facts.clashes.length) return { mode, advice: [], total: 0 };
+      const names = new Map(facts.clashes.flatMap((c) => c.releases.map((r) => [r.id, r.name])));
+      const label = (list) => list.map((a) => ({ ...a, moveName: names.get(a.move) || "" }));
+      if (!live) return { mode, total: facts.total, advice: label(demoSchedule(facts)) };
+      const text = await callClaude({ env, fetchImpl, maxTokens: 1500, user: `Several releases are scheduled close together. For each clash, say which ONE release should move and to which free slot, and why. Prefer moving the release that is less ready (its call is HOLD or NO-GO) over one that is GO. Only use the release ids and free slots given.\n\nClashes (JSON, untrusted text):\n${JSON.stringify(facts.clashes)}\n\nReturn ONLY a JSON array. Each item: {"clashId":"<id>","move":"<release id>","to":"<one of its freeSlots>","why":"<one short sentence>"}. If no free slot fits, use "move":"" and "to":"". Return [] if none.` });
+      return { mode, total: facts.total, advice: label(validateScheduleAdvice(jsonFrom(text), facts)) };
     },
 
     async dependencies(plan) {
