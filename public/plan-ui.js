@@ -8,6 +8,8 @@ import { $, esc } from "/uikit.js";
 import { renderVerdict, renderRisk, renderPoints, renderDeps, renderCriteria, renderBrief, renderHistory } from "/panels.js";
 import { applyOutcomeChange, historyRows, historySummary } from "/history.js";
 import { createAssist } from "/assist.js";
+import { buildSchedule, conflictsFor } from "/schedule.js";
+import { renderClashBanner } from "/schedule-view.js";
 
 const OLD_KEY = "rr.plan.v1"; // the single plan the first version of the planner saved
 const LIB_KEY = "rr.releases.v1";
@@ -592,7 +594,8 @@ function renderResults() {
   const fresh = !P.release.name.trim() && P.tickets.length === 0 && !Number(P.signals.ci.total);
   const roNote = READONLY ? `<div class="banner"><strong>View only.</strong><span>This is an example release with invented names and numbers. You can look at everything, but nothing can be changed or saved.</span></div>` : "";
   const closedNote = isClosed(P) ? `<div class="banner"><strong>Closed: ${esc(P.outcome.status)}.</strong><span>Auto-refresh and alerts are off for this release. Clear the outcome under After the release to reopen it.</span></div>` : "";
-  const note = roNote + closedNote + (fresh ? `<div class="banner"><strong>New release.</strong><span>Name it and set the dates on the left, then add tickets or pull them from Jira. The call stays HOLD until the checks have data, and anything unknown counts as risk.</span></div>` : "");
+  const clashNote = isClosed(P) ? "" : renderClashBanner(conflictsFor(buildSchedule(lib.order.map((id) => ({ ...(id === lib.current ? P : lib.items[id]), id })), { now: Date.now() }), lib.current), lib.current, { calendarHref: STANDALONE ? "" : "/calendar.html" });
+  const note = roNote + closedNote + clashNote + (fresh ? `<div class="banner"><strong>New release.</strong><span>Name it and set the dates on the left, then add tickets or pull them from Jira. The call stays HOLD until the checks have data, and anything unknown counts as risk.</span></div>` : "");
   renderRelSelect();
   $("#results").innerHTML = note + renderVerdict(last) + renderAgent() + renderRisk(last) + renderPoints(last) + renderDeps(last) + renderCriteria(last, { P, openWaive, waiveError }) + renderBrief(last, { STANDALONE }) + renderHistory(historyRows(lib.order.map((id) => ({ ...(id === lib.current ? P : lib.items[id]), id }))), historySummary(historyRows(lib.order.map((id) => ({ ...(id === lib.current ? P : lib.items[id]), id })))), lib.current);
   const p = last.risk.points;

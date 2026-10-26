@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Release calendar</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Schibsted+Grotesk:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <div class="title"><h1>Release calendar</h1><div class="sub mono">Every open release on one timeline, with the places they get in each other's way.</div></div>
+      <nav class="nav" aria-label="Pages"><a href="/">Dashboard</a><a href="/plan.html">Planner</a><a href="/calendar.html" aria-current="page">Calendar</a><a href="/inbox.html" data-inbox>Inbox</a></nav>
+    </header>
+    <div class="banner bad" id="err" role="alert" hidden></div>
+    <section class="panel" aria-label="Timeline">
+      <div class="panel-head"><h2>Timeline</h2>
+        <label class="note">Show <select id="range"><option value="14">2 weeks</option><option value="28" selected>4 weeks</option><option value="56">8 weeks</option></select></label>
+        <label class="note"><input type="checkbox" id="closed"> Include closed releases</label>
+      </div>
+      <div id="timeline"><p class="note">Loading…</p></div>
+    </section>
+    <section class="panel" aria-label="Clashes">
+      <div class="panel-head"><h2 id="clash-title">Clashes</h2><button class="btn small" type="button" id="ai-check" title="Asks which release to move, and to when. Suggests only, never changes a date.">Ask AI which to move</button></div>
+      <div id="clashes"></div>
+      <div id="ai-out" class="ai-quick" aria-live="polite"></div>
+    </section>
+    <section class="panel" id="unsched-box" aria-label="No deploy date" hidden></section>
+  </div>
+  <script src="/session.js"></script>
+  <script type="module" src="/calendar.js"></script>
+</body>
+</html>

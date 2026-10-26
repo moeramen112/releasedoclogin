@@ -108,8 +108,9 @@ const sugId = (s) => `${s.kind}|${up(s.key)}|${typeof s.value === "object" ? JSO
  * Check one release. Returns the new snapshot, what changed, and drafts for the Inbox.
  *  prev      the snapshot from the last check, or null the first time
  *  existing  Inbox items already made for this release (open or decided), so nothing is made twice
+ *  clashes   schedule clashes that involve this release (from schedule.js conflictsFor), may be empty
  */
-export async function checkRelease({ plan, ai, prev, existing = [], now = Date.now() }) {
+export async function checkRelease({ plan, ai, prev, existing = [], clashes = [], now = Date.now() }) {
   const cur = snapshotOf(plan, now);
   const name = clip(plan.release?.name, 80) || "Untitled release";
   const first = !prev;
@@ -133,7 +134,13 @@ export async function checkRelease({ plan, ai, prev, existing = [], now = Date.n
     push({ kind: "chase", title: `Chase: ${h.what}`, text: chaseText(h, name, plan.when?.deployAt), why: h.status === "Blocked" ? "Handoff is blocked." : "Handoff is overdue.", importance: "high", dedupe: `chase|${handoffKey(h)}|${h.status}|${h.due}` });
   }
 
-  // 3. Suggestions from the risk spotter and dependency finder that nobody has seen yet.
+  // 3. A chase note for each schedule clash with another release (medium or high only; "heads up" clashes stay on the calendar).
+  for (const c of clashes.filter((x) => x.severity !== "low").slice(0, 5)) {
+    const other = c.releases.find((r) => r.name !== name) || c.releases[0];
+    push({ kind: "chase", title: `Schedule clash: ${name} and ${other.name}`.slice(0, 140), text: `Hi, ${c.text} Can we agree which one moves, or add a safeguard?`, why: c.severity === "high" ? "Deploy windows overlap." : "Releases are scheduled close together.", importance: c.severity === "high" ? "high" : "medium", dedupe: `clash|${c.id}|${c.at}` });
+  }
+
+  // 4. Suggestions from the risk spotter and dependency finder that nobody has seen yet.
   const risks = (await ai.risks(plan)).suggestions, deps = (await ai.dependencies(plan)).suggestions;
   const current = [...risks, ...deps].filter((s) => s.confidence !== "low" || s.kind !== "team");
   const currentIds = new Set(current.map(sugId));

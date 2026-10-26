@@ -1,5 +1,6 @@
 // Runs the agent on stored releases and keeps the Inbox. The routes and the timer both call this one thing.
 import { checkRelease, newItem, trimInbox } from "./agent.js";
+import { buildSchedule, conflictsFor } from "./schedule.js";
 import { sendSlack as realSendSlack } from "./notify.js";
 import { isClosed } from "./plan.js";
 
@@ -24,7 +25,9 @@ export function createAgentService({ relDb, agentDb, ai, env = process.env, deps
       const st = agentDb.get();
       const prev = st.runs[id]?.snapshot || null;
       const existing = st.inbox.filter((i) => i.releaseId === id);
-      const r = await checkRelease({ plan: rec.plan, ai, prev, existing, now });
+      const plans = Object.values(relDb.get().releases).map((x) => ({ ...x.plan, id: x.id }));
+      const clashes = conflictsFor(buildSchedule(plans, { now }), id);
+      const r = await checkRelease({ plan: rec.plan, ai, prev, existing, clashes, now });
       await agentDb.mutate((s) => {
         s.runs[id] = { at: now, by, source, snapshot: r.snapshot, changes: r.changes.slice(0, 40), first: r.first, quiet: r.quiet, items: r.drafts.length };
         for (const i of s.inbox) if (r.expire.includes(i.id)) { i.status = "expired"; i.decidedAt = now; i.decidedBy = "agent"; i.outcome = "No longer applies"; }

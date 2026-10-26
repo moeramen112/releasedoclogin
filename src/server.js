@@ -26,7 +26,7 @@ const RELEASE_RE = /^\/api\/releases\/([a-z0-9-]{3,64})$/;
 const PUBLIC_API = new Set(["GET /api/health", "GET /api/auth/status", "POST /api/auth/login", "POST /api/auth/accept"]);
 const PUBLIC_FILES = new Set(["/login.html", "/invite.html", "/login.js", "/styles.css"]);
 // Who may call what. Anything not listed needs only a signed-in user (viewer).
-const NEEDS = { "POST /api/waive": "editor", "POST /api/unwaive": "editor", "POST /api/manual": "editor", "POST /api/notify": "editor", "POST /api/agent/check": "editor", "POST /api/agent/auto": "editor", "POST /api/agent/item": "editor", "POST /api/ai/briefing": "editor", "POST /api/ai/risks": "editor", "POST /api/ai/dependencies": "editor", "GET /api/jira/issues": "editor", "GET /api/admin/users": "admin", "POST /api/admin/users": "admin", "POST /api/admin/users/reinvite": "admin", "POST /api/admin/users/update": "admin" };
+const NEEDS = { "POST /api/waive": "editor", "POST /api/unwaive": "editor", "POST /api/manual": "editor", "POST /api/notify": "editor", "POST /api/agent/check": "editor", "POST /api/agent/auto": "editor", "POST /api/agent/item": "editor", "POST /api/ai/briefing": "editor", "POST /api/ai/risks": "editor", "POST /api/ai/dependencies": "editor", "POST /api/ai/schedule": "editor", "GET /api/jira/issues": "editor", "GET /api/admin/users": "admin", "POST /api/admin/users": "admin", "POST /api/admin/users/reinvite": "admin", "POST /api/admin/users/update": "admin" };
 const SECURITY_HEADERS = { "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY" };
 const LOCAL_USER = { email: "local", name: "Local user", role: "admin" };
 const MAX_RELEASES = 500;
@@ -316,6 +316,13 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
       try { return await ai.dependencies(body.plan); } catch (e) { throw new HttpError(e.status || 502, e.message); }
     },
 
+    // Schedule check across all releases. It reads the plans itself, so the page sends nothing.
+    "POST /api/ai/schedule": async (req, url, user) => {
+      guard(req); aiLimit(user);
+      const plans = Object.values(relDb.get().releases).map((r) => ({ ...r.plan, id: r.id }));
+      try { return await ai.schedule(plans); } catch (e) { throw new HttpError(e.status || 502, e.message); }
+    },
+
     // For the host to check the server is alive. Says nothing about your data.
     "GET /api/health": async () => ({ ok: true }),
 
@@ -337,7 +344,7 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
   };
 
   // The browser runs the same pure modules as the server, so the planner and the dashboard cannot disagree.
-  const SHARED = { "/engine.js": "engine.js", "/risk.js": "risk.js", "/plan.js": "plan.js", "/deps.js": "deps.js", "/history.js": "history.js" };
+  const SHARED = { "/engine.js": "engine.js", "/risk.js": "risk.js", "/plan.js": "plan.js", "/deps.js": "deps.js", "/history.js": "history.js", "/html.js": "html.js", "/schedule.js": "schedule.js", "/schedule-view.js": "schedule-view.js" };
 
   async function serveStatic(pathname, res) {
     const rel = pathname === "/" ? "/index.html" : pathname;
