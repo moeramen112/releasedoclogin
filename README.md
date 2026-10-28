@@ -118,6 +118,7 @@ When a release is done, open the last section on the left, **After the release**
 - Picking an outcome **closes** the release. The tool saves the call and risk score as they were at that moment, and fills in the closing time if it is empty.
 - A closed release stops auto-refreshing from Jira, stops sending Slack alerts, and is skipped by Auto checks. Clear the outcome to reopen it.
 - The **Release history** panel at the bottom of the results lists every closed release, newest first, with a counts line and how each call held up: for example "NO-GO at close: 1 shipped, 1 had issues or were rolled back". The line "N shipped while the call was HOLD or NO-GO" is the one to look at.
+- Above the list sit the **trends**: change failure rate (shipped with issues or rolled back, out of everything shipped), how often the call at close was right (GO and it went clean, or HOLD / NO-GO and it did not), average risk score for each outcome, and shipped per month. They come from outcomes you already record, so there is nothing new to enter. With fewer than 3 shipped releases the panel says the numbers are only a first look.
 - **Duplicate** and **Start next release** always begin open.
 
 ![Release history: outcome counts, how the call held up, and each closed release](docs/history.png)
@@ -456,7 +457,7 @@ src/engine.js      criteria evaluators, waivers, verdict (pure)
 src/risk.js        story points, forecast, risk score (pure)
 src/deps.js        what waits on what: blockers, handoffs, cycles, chains (pure)
 src/plan.js        the plan, templates, runbook generator and handoff steps, brief (pure)
-src/history.js     release history: the call when closed, rows and summary (pure)
+src/history.js     release history: the call when closed, rows, summary and trends (pure)
 src/schedule.js    release calendar: clash checks, rules, free slots (pure)
 src/raid.js        RAID log: items, rule-based suggestions, cross-release view (pure)
 src/raid-view.js   the RAID page table and counts as HTML (pure)
@@ -495,10 +496,9 @@ scripts/           build-standalone.mjs makes the single-file planner
 
 1. Read CI status from the CI provider directly, and map it to the release branch automatically.
 2. Learn the weights from history: which factors preceded a rollback or an incident.
-3. Trends over time in Release history (for example risk against outcome, by month).
-4. Let the agent read Jira descriptions and comments, and email chase notes with approval.
-5. Per-team criteria sets.
-6. Release calendar: drag a deploy bar to a new date, and show on-call and holiday calendars.
+3. Let the agent read Jira descriptions and comments, and email chase notes with approval.
+4. Per-team criteria sets.
+5. Release calendar: drag a deploy bar to a new date, and show on-call and holiday calendars.
 
 ## Demo script (three minutes)
 

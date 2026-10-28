@@ -373,6 +373,13 @@ details.quick > summary { cursor: pointer; font-size: 12px; color: var(--muted);
 .ti-map select { max-width: 100%; }
 #tk-source select { margin-left: 4px; }
 
+/* History trends */
+.trends { margin: 10px 0; }
+.trend-row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 6px; }
+.trend { flex: 1 1 180px; border: 1px solid var(--line, #d8d8d8); border-radius: 8px; padding: 10px 12px; }
+.trend-n { font: 600 28px/1.1 "IBM Plex Mono", monospace; }
+.trend-l { font-weight: 600; margin-top: 2px; }
+
 </style>
 </head>
 <body>
@@ -1779,7 +1786,51 @@ function historySummary(rows) {
   };
 }
 
-return { takeSnapshot, applyOutcomeChange, historyRows, historySummary };
+const TREND_MIN = 3; // fewer shipped releases than this and the percentages are only anecdotes
+
+const pct = (n, d) => (d ? Math.round((n / d) * 100) : null);
+const avg = (xs) => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null);
+
+/**
+ * Delivery measures from closed releases. Needs no new data.
+ *  changeFailureRate  share of shipped releases that had issues or were rolled back (null with nothing shipped)
+ *  callRight          how often the call at close matched what happened, among shipped releases that kept a call:
+ *                     GO + shipped cleanly, or HOLD / NO-GO + trouble, counts as right. HOLD / NO-GO + clean is "cautious".
+ *  riskByOutcome      average risk score at close for each outcome (only releases that kept a snapshot)
+ *  months             shipped and troubled releases per month, oldest first
+ *  enough             false when fewer than TREND_MIN releases shipped: show the numbers, but say they are thin
+ */
+function historyTrends(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const shipped = list.filter((r) => r.shipped);
+  const trouble = shipped.filter((r) => r.trouble).length;
+  const judged = shipped.filter((r) => r.call);
+  const right = judged.filter((r) => (r.call === "GO") !== r.trouble).length;
+  const cautious = judged.filter((r) => r.call !== "GO" && !r.trouble).length;
+  const missed = judged.filter((r) => r.call === "GO" && r.trouble).length;
+  const riskByOutcome = {};
+  for (const st of OUTCOMES) {
+    const scores = list.filter((r) => r.status === st && Number.isFinite(r.risk)).map((r) => r.risk);
+    if (scores.length) riskByOutcome[st] = { avg: avg(scores), n: scores.length };
+  }
+  const byMonth = new Map();
+  for (const r of shipped) {
+    const t = Date.parse(r.at);
+    if (Number.isNaN(t)) continue;
+    const d = new Date(t), key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const m = byMonth.get(key) || { month: key, shipped: 0, trouble: 0 };
+    m.shipped++; if (r.trouble) m.trouble++;
+    byMonth.set(key, m);
+  }
+  return {
+    shipped: shipped.length, trouble, changeFailureRate: pct(trouble, shipped.length),
+    judged: judged.length, right, callRight: pct(right, judged.length), cautious, missed,
+    riskByOutcome, months: [...byMonth.values()].sort((a, b) => a.month.localeCompare(b.month)),
+    enough: shipped.length >= TREND_MIN,
+  };
+}
+
+return { takeSnapshot, applyOutcomeChange, historyRows, historySummary, TREND_MIN, historyTrends };
 })();
 const __mod_html = (() => {
 // Tiny HTML helpers shared by the pages and the pure render modules.
@@ -2510,13 +2561,26 @@ const OUT_CHIP = { "Shipped cleanly": "pass", "Shipped with issues": "warn", "Ro
 const when = (v) => { const t = Date.parse(v); return Number.isNaN(t) ? "" : new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }); };
 
 /** Closed releases and how they turned out. rows and sum come from history.js. */
-function renderHistory(rows, sum, currentId) {
+function renderTrends(t) {
+  if (!t || !t.shipped) return "";
+  const monthName = (k) => new Date(`${k}-15T12:00:00`).toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+  const stat = (big, label, hint) => `<div class="trend"><div class="trend-n">${big}</div><div class="trend-l">${esc(label)}</div><div class="msg">${esc(hint)}</div></div>`;
+  const cfr = stat(`${t.changeFailureRate}%`, "Change failure rate", `${t.trouble} of ${t.shipped} shipped had issues or were rolled back`);
+  const call = t.judged ? stat(`${t.callRight}%`, "Calls that were right", `${t.right} of ${t.judged}${t.missed ? `; ${t.missed} GO had trouble` : ""}${t.cautious ? `; ${t.cautious} held but shipped fine` : ""}`) : "";
+  const order = ["Shipped cleanly", "Shipped with issues", "Rolled back", "Cancelled"].filter((k) => t.riskByOutcome[k]);
+  const risk = order.length ? `<div class="msg">Average risk at close: ${order.map((k) => `${esc(k.toLowerCase())} ${t.riskByOutcome[k].avg} (${t.riskByOutcome[k].n})`).join(", ")}.</div>` : "";
+  const months = t.months.length > 1 ? `<div class="msg">Shipped per month: ${t.months.map((m) => `${esc(monthName(m.month))} ${m.shipped}${m.trouble ? ` (${m.trouble} with trouble)` : ""}`).join(", ")}.</div>` : "";
+  const thin = t.enough ? "" : `<div class="msg">Only ${t.shipped} shipped so far, so treat these as a first look, not a trend.</div>`;
+  return `<div class="trends" id="history-trends"><div class="trend-row">${cfr}${call}</div>${risk}${months}${thin}</div>`;
+}
+
+function renderHistory(rows, sum, currentId, trends) {
   const head = `<div class="panel-head"><h2>Release history</h2><span class="note">Releases with an outcome recorded under "After the release".</span></div>`;
   if (!rows.length) return `<section class="panel" id="history-panel">${head}<div class="msg">No closed releases yet. When a release is done, pick how it went under <strong>After the release</strong> on the left and it will show up here with the call it had when it closed.</div></section>`;
   const tally = [["clean", "shipped cleanly", "pass"], ["issues", "shipped with issues", "warn"], ["rolledBack", "rolled back", "fail"], ["cancelled", "cancelled", "waived"]].filter(([k]) => sum[k]).map(([k, l, c]) => `<span class="chip s-${c}"><i></i>${sum[k]} ${l}</span>`).join(" ");
   const calls = ["GO", "HOLD", "NO-GO"].filter((c) => sum.byCall[c]).map((c) => `<li><strong>${esc(c)}</strong> at close: ${sum.byCall[c].shipped} shipped, ${sum.byCall[c].trouble} had issues or were rolled back</li>`).join("");
   const body = rows.map((r) => `<tr><td>${esc(r.name)}${r.version ? ` <span class="mono">${esc(r.version)}</span>` : ""}<div class="msg">${esc(when(r.at))}</div></td><td><span class="chip s-${OUT_CHIP[r.status] || "pending"}"><i></i>${esc(r.status)}</span></td><td>${r.call ? `${esc(r.call)}${r.risk === null ? "" : `<div class="msg">risk ${r.risk}</div>`}` : "—"}</td><td>${r.id === currentId ? `<span class="msg">Open now</span>` : `<button class="btn small" type="button" data-act="open-release" data-id="${esc(r.id)}">Open</button>`}</td></tr>${r.note ? `<tr><td colspan="4" class="msg">${esc(r.note.length > 200 ? r.note.slice(0, 200) + "…" : r.note)}</td></tr>` : ""}`).join("");
-  return `<section class="panel" id="history-panel">${head}<div class="row-actions">${tally}</div>${sum.shippedAgainstCall ? `<div class="msg">${sum.shippedAgainstCall} shipped while the call was HOLD or NO-GO.</div>` : ""}${calls ? `<ul class="plain">${calls}</ul>` : ""}<div class="tablewrap"><table class="tbl"><thead><tr><th>Release</th><th>Outcome</th><th>Call when closed</th><th></th></tr></thead><tbody>${body}</tbody></table></div></section>`;
+  return `<section class="panel" id="history-panel">${head}<div class="row-actions">${tally}</div>${renderTrends(trends)}${sum.shippedAgainstCall ? `<div class="msg">${sum.shippedAgainstCall} shipped while the call was HOLD or NO-GO.</div>` : ""}${calls ? `<ul class="plain">${calls}</ul>` : ""}<div class="tablewrap"><table class="tbl"><thead><tr><th>Release</th><th>Outcome</th><th>Call when closed</th><th></th></tr></thead><tbody>${body}</tbody></table></div></section>`;
 }
 
 /**
@@ -2538,7 +2602,7 @@ function renderRaid(sum, top, suggestions, { canEdit = true, canAi = false, busy
   return `<section class="panel" id="raid-panel"><div class="panel-head"><h2>RAID log</h2><span class="note">Risks, assumptions, issues and dependencies. Edit them under RAID on the left.</span></div><div class="row-actions">${chips}</div>${types ? `<div class="msg">${esc(types)}.</div>` : `<div class="msg">Nothing logged yet.</div>`}${list}${sugg}${ai}</section>`;
 }
 
-return { ratioColor, FC_CHIP, FC_TEXT, renderVerdict, renderRisk, renderPoints, renderDeps, renderCriteria, renderBrief, renderHistory, renderRaid };
+return { ratioColor, FC_CHIP, FC_TEXT, renderVerdict, renderRisk, renderPoints, renderDeps, renderCriteria, renderBrief, renderTrends, renderHistory, renderRaid };
 })();
 const __mod_assist = (() => {
 // AI helpers and the agent panel. They suggest and draft; a person approves everything.
@@ -2733,7 +2797,8 @@ const { mergeTickets, completePlan, defaultPlan, blankPlan, nextPlan, applyTempl
 const { $, esc } = __mod_uikit;
 const { renderVerdict, renderRisk, renderPoints, renderDeps, renderCriteria, renderBrief, renderHistory, renderRaid } = __mod_panels;
 const { RAID_TYPES, RAID_STATUS, RAID_RATINGS, emptyRaid, summarizeRaid, isOverdue, isClosedRaid, suggestRaid, acceptSuggestion } = __mod_raid;
-const { applyOutcomeChange, historyRows, historySummary } = __mod_history;
+const { applyOutcomeChange, historyRows, historySummary, historyTrends } = __mod_history;
+const hRowsOf = (lib) => historyRows(lib.order.map((id) => ({ ...(id === lib.current ? P : lib.items[id]), id })));
 const { createAssist } = __mod_assist;
 const { parseTable, suggestMapping, mapTickets, IMPORT_FIELDS, IMPORT_LIMITS } = __mod_import;
 const { buildSchedule, conflictsFor } = __mod_schedule;
@@ -3367,7 +3432,7 @@ function renderResults() {
   const clashNote = renderClashBanner(clashes, lib.current, { calendarHref: STANDALONE ? "" : "/calendar.html" });
   const note = roNote + closedNote + clashNote + (fresh ? `<div class="banner"><strong>New release.</strong><span>Name it and set the dates on the left, then add tickets or pull them from Jira. The call stays HOLD until the checks have data, and anything unknown counts as risk.</span></div>` : "");
   renderRelSelect();
-  $("#results").innerHTML = note + renderVerdict(last) + renderAgent() + renderRisk(last) + renderPoints(last) + renderDeps(last) + raidPanel(clashes) + renderCriteria(last, { P, openWaive, waiveError }) + renderBrief(last, { STANDALONE }) + renderHistory(historyRows(lib.order.map((id) => ({ ...(id === lib.current ? P : lib.items[id]), id }))), historySummary(historyRows(lib.order.map((id) => ({ ...(id === lib.current ? P : lib.items[id]), id })))), lib.current);
+  $("#results").innerHTML = note + renderVerdict(last) + renderAgent() + renderRisk(last) + renderPoints(last) + renderDeps(last) + raidPanel(clashes) + renderCriteria(last, { P, openWaive, waiveError }) + renderBrief(last, { STANDALONE }) + renderHistory(hRowsOf(lib), historySummary(hRowsOf(lib)), lib.current, historyTrends(hRowsOf(lib)));
   const p = last.risk.points;
   const sum = $("#tk-sum");
   if (sum) sum.textContent = `${p.tickets} tickets · ${p.total} points · ${p.done} done`;
