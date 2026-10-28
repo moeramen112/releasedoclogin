@@ -7,7 +7,8 @@ import { mergeTickets, completePlan, defaultPlan, blankPlan, nextPlan, applyTemp
 import { $, esc } from "/uikit.js";
 import { renderVerdict, renderRisk, renderPoints, renderDeps, renderCriteria, renderBrief, renderHistory, renderRaid } from "/panels.js";
 import { RAID_TYPES, RAID_STATUS, RAID_RATINGS, emptyRaid, summarizeRaid, isOverdue, isClosedRaid, suggestRaid, acceptSuggestion } from "/raid.js";
-import { applyOutcomeChange, historyRows, historySummary } from "/history.js";
+import { applyOutcomeChange, historyRows, historySummary, historyTrends } from "/history.js";
+const hRowsOf = (lib) => historyRows(lib.order.map((id) => ({ ...(id === lib.current ? P : lib.items[id]), id })));
 import { createAssist } from "/assist.js";
 import { parseTable, suggestMapping, mapTickets, IMPORT_FIELDS, IMPORT_LIMITS } from "/import.js";
 import { buildSchedule, conflictsFor } from "/schedule.js";
@@ -642,7 +643,7 @@ function renderResults() {
   const clashNote = renderClashBanner(clashes, lib.current, { calendarHref: STANDALONE ? "" : "/calendar.html" });
   const note = roNote + closedNote + clashNote + (fresh ? `<div class="banner"><strong>New release.</strong><span>Name it and set the dates on the left, then add tickets or pull them from Jira. The call stays HOLD until the checks have data, and anything unknown counts as risk.</span></div>` : "");
   renderRelSelect();
-  $("#results").innerHTML = note + renderVerdict(last) + renderAgent() + renderRisk(last) + renderPoints(last) + renderDeps(last) + raidPanel(clashes) + renderCriteria(last, { P, openWaive, waiveError }) + renderBrief(last, { STANDALONE }) + renderHistory(historyRows(lib.order.map((id) => ({ ...(id === lib.current ? P : lib.items[id]), id }))), historySummary(historyRows(lib.order.map((id) => ({ ...(id === lib.current ? P : lib.items[id]), id })))), lib.current);
+  $("#results").innerHTML = note + renderVerdict(last) + renderAgent() + renderRisk(last) + renderPoints(last) + renderDeps(last) + raidPanel(clashes) + renderCriteria(last, { P, openWaive, waiveError }) + renderBrief(last, { STANDALONE }) + renderHistory(hRowsOf(lib), historySummary(hRowsOf(lib)), lib.current, historyTrends(hRowsOf(lib)));
   const p = last.risk.points;
   const sum = $("#tk-sum");
   if (sum) sum.textContent = `${p.tickets} tickets · ${p.total} points · ${p.done} done`;

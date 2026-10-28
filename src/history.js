@@ -67,3 +67,47 @@ export function historySummary(rows) {
     byCall,
   };
 }
+
+export const TREND_MIN = 3; // fewer shipped releases than this and the percentages are only anecdotes
+
+const pct = (n, d) => (d ? Math.round((n / d) * 100) : null);
+const avg = (xs) => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null);
+
+/**
+ * Delivery measures from closed releases. Needs no new data.
+ *  changeFailureRate  share of shipped releases that had issues or were rolled back (null with nothing shipped)
+ *  callRight          how often the call at close matched what happened, among shipped releases that kept a call:
+ *                     GO + shipped cleanly, or HOLD / NO-GO + trouble, counts as right. HOLD / NO-GO + clean is "cautious".
+ *  riskByOutcome      average risk score at close for each outcome (only releases that kept a snapshot)
+ *  months             shipped and troubled releases per month, oldest first
+ *  enough             false when fewer than TREND_MIN releases shipped: show the numbers, but say they are thin
+ */
+export function historyTrends(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const shipped = list.filter((r) => r.shipped);
+  const trouble = shipped.filter((r) => r.trouble).length;
+  const judged = shipped.filter((r) => r.call);
+  const right = judged.filter((r) => (r.call === "GO") !== r.trouble).length;
+  const cautious = judged.filter((r) => r.call !== "GO" && !r.trouble).length;
+  const missed = judged.filter((r) => r.call === "GO" && r.trouble).length;
+  const riskByOutcome = {};
+  for (const st of OUTCOMES) {
+    const scores = list.filter((r) => r.status === st && Number.isFinite(r.risk)).map((r) => r.risk);
+    if (scores.length) riskByOutcome[st] = { avg: avg(scores), n: scores.length };
+  }
+  const byMonth = new Map();
+  for (const r of shipped) {
+    const t = Date.parse(r.at);
+    if (Number.isNaN(t)) continue;
+    const d = new Date(t), key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const m = byMonth.get(key) || { month: key, shipped: 0, trouble: 0 };
+    m.shipped++; if (r.trouble) m.trouble++;
+    byMonth.set(key, m);
+  }
+  return {
+    shipped: shipped.length, trouble, changeFailureRate: pct(trouble, shipped.length),
+    judged: judged.length, right, callRight: pct(right, judged.length), cautious, missed,
+    riskByOutcome, months: [...byMonth.values()].sort((a, b) => a.month.localeCompare(b.month)),
+    enough: shipped.length >= TREND_MIN,
+  };
+}
