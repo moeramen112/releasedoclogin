@@ -9,6 +9,7 @@ import { renderVerdict, renderRisk, renderPoints, renderDeps, renderCriteria, re
 import { RAID_TYPES, RAID_STATUS, RAID_RATINGS, emptyRaid, summarizeRaid, isOverdue, isClosedRaid, suggestRaid, acceptSuggestion } from "/raid.js";
 import { applyOutcomeChange, historyRows, historySummary } from "/history.js";
 import { createAssist } from "/assist.js";
+import { parseTable, suggestMapping, mapTickets, IMPORT_FIELDS, IMPORT_LIMITS } from "/import.js";
 import { buildSchedule, conflictsFor } from "/schedule.js";
 import { renderClashBanner } from "/schedule-view.js";
 
@@ -355,7 +356,7 @@ function renderInputs() {
       { p: "scope.bigAt", l: "Large ticket at", t: "number", suffix: "points or more" },
     ].map(fieldHtml).join("")}</div>
      <div class="tablewrap"><table class="tbl tk" style="min-width:1340px"><thead><tr><th>Key</th><th>Summary</th><th title="The team doing the work">Team</th><th title="Tickets that must be Done first. Separate keys with commas.">Blocked by</th><th>Type</th><th>Pri</th><th>Pts</th><th>Status</th><th>Assignee</th><th>Area</th><th title="Includes a database migration">Mig</th><th title="Customers will see this">Cust</th><th title="Lacks automated tests">No tests</th><th></th></tr></thead><tbody id="tickets-body"></tbody></table></div>
-     <div class="row-actions"><button class="btn small" type="button" data-act="add-ticket">Add ticket</button><button class="btn small" type="button" data-act="pull-jira" id="b-jira">Pull from Jira</button><button class="btn small" type="button" data-act="refresh-jira" id="b-jira-refresh" title="Update statuses and points of the tickets below, and add new ones. Keeps tickets you typed by hand.">Refresh from Jira</button><span id="tk-clear"></span><span class="msg" id="tk-sum"></span><span class="msg" id="jira-msg"></span><span class="msg" id="sync-state"></span></div>`);
+     <div class="row-actions"><button class="btn small" type="button" data-act="add-ticket">Add ticket</button><button class="btn small" type="button" data-act="pull-jira" id="b-jira">Pull from Jira</button><button class="btn small" type="button" data-act="refresh-jira" id="b-jira-refresh" title="Update statuses and points of the tickets below, and add new ones. Keeps tickets you typed by hand.">Refresh from Jira</button><button class="btn small" type="button" data-act="ti-open" id="b-import" title="Paste rows from a spreadsheet, or load a CSV file exported from any ticket tool">Import from spreadsheet</button><span id="tk-source"></span><span id="tk-clear"></span><span class="msg" id="tk-sum"></span><span class="msg" id="jira-msg"></span><span class="msg" id="sync-state"></span></div><div id="tk-import"></div>`);
 
   html += section("handoffs", "Handoffs between teams", "Work one team must hand to another before it can start. Each handoff blocks the tickets you name until it is Done.",
     `<div class="tablewrap"><table class="tbl" style="min-width:1000px"><thead><tr><th>Handed over</th><th>From</th><th>To</th><th>Owner</th><th>Due</th><th>Status</th><th title="Ticket keys, separated by commas">Blocks</th><th></th></tr></thead><tbody id="handoffs-body"></tbody></table></div>
@@ -391,6 +392,7 @@ function renderInputs() {
   renderRunbook();
   renderClear(true);
   updateJiraButton();
+  renderTicketImport();
 }
 
 const TEAM_OPTS = [{ v: "", l: "—" }, ...TEAMS.map((x) => ({ v: x, l: x }))];
@@ -679,6 +681,7 @@ function onEdit(e) {
     setPath(P, el.dataset.p, el.value);
   }
   if (/^(people|extraPeople)\./.test(el.dataset.p)) renderPeopleList();
+  if (el.dataset.p === "release.tracker") updateJiraButton();
   const rt = /^raid\.(\d+)\.type$/.exec(el.dataset.p);
   if (rt) { const r = P.raid[Number(rt[1])]; r.status = RAID_STATUS[r.type][0]; renderRaidTable(); }
   else if (/^raid\.\d+\.(status|due)$/.test(el.dataset.p)) renderRaidTable();
@@ -704,14 +707,24 @@ function say(id, text, kind = "") {
   if (el) { el.textContent = text; el.className = "msg " + kind; }
 }
 
+// Which ticket trackers this server knows about. A browser-only copy knows just Jira, which stays disabled there.
+const trackerList = () => (integrations.trackers?.length ? integrations.trackers : [{ id: "jira", label: "Jira", versionLabel: "fix version", needs: "JIRA_BASE_URL, JIRA_EMAIL and JIRA_API_TOKEN", configured: integrations.jira }]);
+const curTracker = () => trackerList().find((t) => t.id === (P?.release?.tracker || "jira")) || trackerList()[0];
+
 function updateJiraButton() {
-  const why = integrations.jira ? "" : integrations.server ? "Set JIRA_BASE_URL, JIRA_EMAIL and JIRA_API_TOKEN on the server" : "Available when running the server (npm start)";
-  for (const id of ["#b-jira", "#b-jira-refresh"]) {
+  const t = curTracker();
+  const why = t.configured ? "" : integrations.server ? `Set ${t.needs} on the server` : "Available when running the server (npm start)";
+  for (const [id, verb] of [["#b-jira", "Pull from"], ["#b-jira-refresh", "Refresh from"]]) {
     const b = $(id);
     if (!b) continue;
-    b.disabled = !integrations.jira;
+    b.textContent = `${verb} ${t.label}`;
+    b.disabled = !t.configured;
     if (why) b.title = why;
   }
+  // Only when the server has more than one tracker is there anything to choose.
+  const pick = $("#tk-source");
+  if (pick) pick.innerHTML = trackerList().length > 1
+    ? `<label class="msg">Ticket source <select data-p="release.tracker" aria-label="Ticket source">${trackerList().map((x) => `<option value="${esc(x.id)}"${x.id === t.id ? " selected" : ""}>${esc(x.label)}</option>`).join("")}</select></label>` : "";
 }
 
 let syncTimer;
@@ -732,39 +745,99 @@ async function showSync() {
   } catch { /* status is a nicety */ }
 }
 
-async function refreshJira() {
-  const version = P.release.fixVersion.trim();
-  if (!version) { say("jira-msg", "Enter the Jira fix version first.", "bad"); return; }
-  say("jira-msg", "Refreshing from Jira…");
+async function fetchTracker(say_) {
+  const t = curTracker(), version = P.release.fixVersion.trim();
+  if (!version) { say("jira-msg", `Enter the ${t.label} ${t.versionLabel} first.`, "bad"); return null; }
+  say("jira-msg", say_(t));
   try {
-    const res = await fetch("/api/jira/issues?version=" + encodeURIComponent(version));
+    const res = await fetch(`/api/tickets?tracker=${encodeURIComponent(t.id)}&version=${encodeURIComponent(version)}`);
     const body = await res.json();
     if (!res.ok) throw new Error(body.error || `Request failed (${res.status}).`);
-    const m = mergeTickets(P.tickets, body.issues);
-    P.tickets = m.tickets;
-    renderTickets(); changed();
-    say("jira-msg", `Refreshed ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}: ${m.updated} updated, ${m.added} new, ${m.kept} not in Jira kept as they were.`, "ok");
+    return { t, version, issues: body.issues };
   } catch (e) {
     say("jira-msg", e.message, "bad");
+    return null;
   }
 }
 
-async function pullJira() {
-  const version = P.release.fixVersion.trim();
-  if (!version) { say("jira-msg", "Enter the Jira fix version first.", "bad"); return; }
-  say("jira-msg", "Loading from Jira…");
-  try {
-    const res = await fetch("/api/jira/issues?version=" + encodeURIComponent(version));
-    const body = await res.json();
-    if (!res.ok) throw new Error(body.error || `Request failed (${res.status}).`);
-    P.tickets = body.issues;
-    renderTickets(); changed();
-    const pts = body.issues.reduce((n, i) => n + i.points, 0);
-    say("jira-msg", `Loaded ${body.issues.length} tickets and ${pts} points from fix version ${version}. This replaced the tickets above.`, "ok");
-  } catch (e) {
-    say("jira-msg", e.message, "bad");
-  }
+async function refreshJira() {
+  const got = await fetchTracker((t) => `Refreshing from ${t.label}…`);
+  if (!got) return;
+  const m = mergeTickets(P.tickets, got.issues);
+  P.tickets = m.tickets;
+  renderTickets(); changed();
+  say("jira-msg", `Refreshed ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}: ${m.updated} updated, ${m.added} new, ${m.kept} not in ${got.t.label} kept as they were.`, "ok");
 }
+
+async function pullJira() {
+  const got = await fetchTracker((t) => `Loading from ${t.label}…`);
+  if (!got) return;
+  P.tickets = got.issues;
+  renderTickets(); changed();
+  const pts = got.issues.reduce((n, i) => n + i.points, 0);
+  say("jira-msg", `Loaded ${got.issues.length} tickets and ${pts} points from ${got.t.versionLabel} ${got.version}. This replaced the tickets above.`, "ok");
+}
+
+/* ---------- import tickets from a spreadsheet (any tracker that can export) ---------- */
+
+const TI = { open: false, text: "", sig: "", mapping: {} };
+let tiTimer = 0;
+
+function tiState() {
+  const t = parseTable(TI.text);
+  const sig = t.headers.join("\u0001");
+  if (TI.sig !== sig) { TI.sig = sig; TI.mapping = suggestMapping(t.headers); } // new headers: guess again; the same headers keep the person's choices
+  return { t, r: mapTickets(t.rows, TI.mapping) };
+}
+
+function renderTicketImport() {
+  const host = $("#tk-import");
+  if (!host) return;
+  if (TI.forId !== lib.current) { TI.forId = lib.current; TI.open = false; } // an open import belongs to the release it was opened on
+  if (!TI.open) { host.innerHTML = ""; return; }
+  host.innerHTML = `<div class="import-box">
+    <div class="lab-row">Import tickets from a spreadsheet</div>
+    <p class="msg">Copy the rows from your sheet (with the header row) and paste them here, or load a CSV file. Works with exports from Jira, Linear, Asana, Azure DevOps, Trello or any spreadsheet. Tickets with a key you already have are updated; the rest are added. Nothing is deleted.</p>
+    <textarea id="ti-text" rows="6" spellcheck="false" aria-label="Pasted spreadsheet rows" placeholder="Key&#9;Summary&#9;Status&#9;Story points&#10;REL-1&#9;Fix the login&#9;In progress&#9;3"></textarea>
+    <div class="row-actions"><label class="btn small" for="ti-file">Load a CSV file</label><input type="file" id="ti-file" accept=".csv,.tsv,.txt,text/csv,text/plain" hidden><span class="msg" id="ti-file-msg"></span></div>
+    <div id="ti-preview"></div></div>`;
+  $("#ti-text").value = TI.text;
+  renderTiPreview();
+}
+
+function renderTiPreview() {
+  const box = $("#ti-preview");
+  if (!box) return;
+  if (!TI.text.trim()) { box.innerHTML = `<div class="row-actions"><button class="btn small" type="button" data-act="ti-cancel">Cancel</button></div>`; return; }
+  const { t, r } = tiState();
+  if (!t.headers.length || !t.rows.length) { box.innerHTML = `<div class="msg bad">I need a header row and at least one row of tickets.</div><div class="row-actions"><button class="btn small" type="button" data-act="ti-cancel">Cancel</button></div>`; return; }
+  const col = (id) => `<label class="ti-map"><span>${esc(IMPORT_FIELDS.find((f) => f.id === id).label)}</span><select data-ti="${id}" aria-label="Column for ${esc(id)}"><option value="-1">(not in my sheet)</option>${t.headers.map((h, i) => `<option value="${i}"${TI.mapping[id] === i ? " selected" : ""}>${esc(h || `Column ${i + 1}`)}</option>`).join("")}</select></label>`;
+  const rows = r.tickets.slice(0, 5).map((x) => `<tr><td>${esc(x.key)}</td><td>${esc(x.summary)}</td><td>${esc(x.type)}</td><td>${esc(x.priority)}</td><td>${esc(x.points)}</td><td>${esc(x.status)}</td><td>${esc(x.assignee)}</td></tr>`).join("");
+  const skipped = r.skipped.length ? `${r.skipped.length} row${r.skipped.length === 1 ? "" : "s"} skipped (${esc(r.skipped.slice(0, 3).map((x) => `row ${x.row}: ${x.reason}`).join("; "))}${r.skipped.length > 3 ? "; …" : ""}).` : "";
+  box.innerHTML = `<div class="ti-maps">${IMPORT_FIELDS.map((f) => col(f.id)).join("")}</div>
+    <div class="tablewrap"><table class="tbl"><thead><tr><th>Key</th><th>Summary</th><th>Type</th><th>Pri</th><th>Pts</th><th>Status</th><th>Assignee</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="msg">${r.tickets.length} ticket${r.tickets.length === 1 ? "" : "s"} ready${r.tickets.length > 5 ? " (first 5 shown)" : ""}. ${skipped} ${esc(r.notes.join(" "))}${t.truncated ? ` Only the first ${IMPORT_LIMITS.rows} rows were read.` : ""}</div>
+    <div class="row-actions"><button class="btn small primary" type="button" data-act="ti-go"${r.tickets.length ? "" : " disabled"}>Import ${r.tickets.length} ticket${r.tickets.length === 1 ? "" : "s"}</button><button class="btn small" type="button" data-act="ti-cancel">Cancel</button></div>`;
+}
+
+document.addEventListener("input", (e) => {
+  if (e.target.id !== "ti-text") return;
+  TI.text = e.target.value;
+  clearTimeout(tiTimer); tiTimer = setTimeout(renderTiPreview, 200);
+});
+document.addEventListener("change", async (e) => {
+  if (e.target.dataset?.ti) { TI.mapping = { ...TI.mapping, [e.target.dataset.ti]: Number(e.target.value) }; renderTiPreview(); return; }
+  if (e.target.id !== "ti-file") return;
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  const msg = $("#ti-file-msg");
+  if (file.size > IMPORT_LIMITS.chars) { if (msg) { msg.textContent = "That file is too big to read here (over 2 MB)."; msg.className = "msg bad"; } return; }
+  TI.text = await file.text();
+  if ($("#ti-text")) $("#ti-text").value = TI.text;
+  if (msg) { msg.textContent = file.name; msg.className = "msg"; }
+  renderTiPreview();
+});
 
 document.addEventListener("change", async (e) => {
   if (e.target.id === "ai-audience") AI.audience = e.target.value;
@@ -850,6 +923,18 @@ document.addEventListener("click", async (e) => {
       changed();
       say(what === "tickets" ? "jira-msg" : "rb-msg", "Restored.", "ok");
     }
+  }
+  else if (act === "ti-open") { TI.open = !TI.open; renderTicketImport(); $("#ti-text")?.focus(); }
+  else if (act === "ti-cancel") { TI.open = false; renderTicketImport(); }
+  else if (act === "ti-go") {
+    const { r } = tiState();
+    if (!r.tickets.length) return;
+    lastCleared.tickets = P.tickets;
+    const m = mergeTickets(P.tickets, r.tickets);
+    P.tickets = m.tickets;
+    TI.open = false; TI.text = ""; TI.sig = "";
+    renderTicketImport(); renderTickets(); changed();
+    sayUndo("jira-msg", `Imported ${r.tickets.length} ticket${r.tickets.length === 1 ? "" : "s"}: ${m.added} new, ${m.updated} updated, ${m.kept} already here and left alone.`, "tickets");
   }
   else if (act === "pull-jira") pullJira();
   else if (act === "refresh-jira") refreshJira();
@@ -1019,6 +1104,6 @@ $("#import-file").addEventListener("change", async (e) => {
   }
   try {
     const res = await fetch("/api/config");
-    if (res.ok) { const cfg = await res.json(); integrations = { jira: Boolean(cfg.integrations?.jira), server: true, ai: cfg.integrations?.ai || "" }; updateJiraButton(); renderResults(); }
+    if (res.ok) { const cfg = await res.json(); integrations = { jira: Boolean(cfg.integrations?.jira), server: true, ai: cfg.integrations?.ai || "", trackers: Array.isArray(cfg.integrations?.trackers) ? cfg.integrations.trackers : undefined }; updateJiraButton(); renderResults(); }
   } catch { /* no server, planner still works on its own */ }
 })();

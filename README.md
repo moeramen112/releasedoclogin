@@ -359,7 +359,7 @@ Copy `.env.example` and set what you have. Everything is optional.
 | Variable | What it enables |
 |---|---|
 | `GITHUB_TOKEN` | Higher rate limit and private repositories. Public repositories work without it. |
-| `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` | Open P0/P1 issues on the dashboard, and **Pull from Jira** in the planner (tickets plus story points). |
+| `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` | Open P0/P1 issues on the dashboard, and **Pull from Jira** in the planner (tickets plus story points). Other tools: see Tickets from any tool. |
 | `SLACK_WEBHOOK_URL` | **Post to Slack** sends the current call and what is holding the release. |
 
 Edit `readiness.config.json` to change the repository, release branch, label names, JQL, the Jira story-points field (`customfield_10016` on most sites, but it varies), and the list of criteria.
@@ -411,6 +411,22 @@ Form ───┘   (one shape)  (pure)                         planner, brief, 
 - **Criteria are config.** Which checks count, whether they are required, and how strict they are all live in the config, not in code.
 - **Tokens stay on the server.** The browser never sees them. Changes require a custom header and a same-origin request, so another web page cannot post to a dashboard running on localhost.
 
+## Tickets from any tool
+
+Jira stays the built-in source. Two ways to bring in tickets from anything else:
+
+**Import from a spreadsheet** (no keys, no setup). In the planner, under the tickets table, press **Import from spreadsheet**. Paste rows from a sheet (with the header row) or load a CSV file. The columns are guessed from the headers, you can change any of them, and a preview shows what will be imported before anything changes. Tickets with a key you already have are updated, new ones are added, nothing is deleted, and **Undo** puts it back. It reads exports from Jira, Linear, Asana, Azure DevOps, Trello, or a plain spreadsheet. Priorities (Highest, Critical, P0, 1 and so on), statuses (Done, In QA, Backlog) and types (Bug, Defect, Story) are turned into the planner's words; anything it does not recognise becomes P2 and you are told.
+
+![Import tickets from a spreadsheet: pick the columns, preview, then import](docs/import-tickets.png)
+
+**Plug in another tracker** (for a developer). A tracker is one small object in `src/trackers.js`: an `id`, a `label`, the settings it `needs`, a `configured(env)` check and a `fetchTickets({ version, config, env })` function that returns tickets in the planner's shape. Pass it in `deps.trackers` to `createApp`, or add it to the built-in list. When the server knows more than one tracker, the planner shows a **Ticket source** choice, and Pull and Refresh use it. `GET /api/tickets?tracker=<id>&version=<name>` is the generic address; `/api/jira/issues` still works.
+
+For a Jira site with its own workflow, `readiness.config.json` can now map statuses and types without code changes:
+
+```json
+"jira": { "statusMap": { "Awaiting Sign-off": "In review" }, "typeMap": { "Spike": "Story" }, "priorityMap": {}, "storyPointsField": "customfield_10016" }
+```
+
 ## The risk model
 
 Thirteen factors, weighted to add up to 100. The weights are in `src/risk.js` and each has a test.
@@ -447,6 +463,8 @@ src/raid-view.js   the RAID page table and counts as HTML (pure)
 src/schedule-view.js  calendar timeline, clash cards and planner banner as HTML (pure)
 src/html.js        the one escape helper shared by the pure view modules
 src/sources/       GitHub, Jira, and demo-data adapters
+src/trackers.js    the ticket-tracker plug-in shape, with Jira built in
+src/import.js     spreadsheet import: parse, guess the columns, map to tickets (pure)
 src/server.js      HTTP server and JSON API
 src/auth.js        accounts, sessions, invites, roles (no dependencies)
 src/ai.js          AI helpers: status update, risk spotter, dependency finder, schedule check (demo rules or Claude)
@@ -455,7 +473,7 @@ src/agent-service.js  runs the agent, keeps the Inbox, applies your decisions
 src/jobs.js        the timer: Jira auto-refresh, Slack alerts, Auto checks
 public/            dashboard, planner, calendar, RAID, inbox, sign-in, people (plain JS, no build step)
 public/plan-ui.js  the planner page; panels.js, assist.js and uikit.js hold the result panels, the AI and agent panel, and shared helpers
-test/              187 tests, including a mock GitHub, a mock Jira, a mock Slack and a mock AI service
+test/              229 tests, including a mock GitHub, a mock Jira, a mock Slack and a mock AI service
 scripts/           build-standalone.mjs makes the single-file planner
 ```
 

@@ -11,15 +11,19 @@ export function buildJql(template, release) {
   return template.replaceAll("{{version}}", String(release.jiraVersion || release.name).replace(/"/g, '\\"'));
 }
 
-/** Map a Jira status to the four the planner uses. Status category decides; "review" in the name splits In progress. */
-export function mapStatus(status) {
+/**
+ * Map a Jira status to the four the planner uses. Status category decides; "review" in the name splits In progress.
+ * A site with its own workflow can set jira.statusMap in readiness.config.json, e.g. { "Ready for QA": "In review" }.
+ */
+export function mapStatus(status, custom = {}) {
+  if (custom && status?.name && Object.hasOwn(custom, status.name)) return custom[status.name];
   const cat = status?.statusCategory?.key;
   if (cat === "done") return "Done";
   if (cat === "new") return "To do";
   return /review|qa|test/i.test(status?.name || "") ? "In review" : "In progress";
 }
 
-const JIRA_TYPES = { Bug: "Bug", Task: "Task", "Sub-task": "Task", Story: "Story", Epic: "Story" };
+const JIRA_TYPES = { Bug: "Bug", Task: "Task", "Sub-task": "Task", Story: "Story", Epic: "Story" }; // jira.typeMap adds to this
 
 /**
  * Every issue in the release's fix version, with story points, for the planner.
@@ -31,31 +35,41 @@ export const blockersFrom = (f) => (f.issuelinks || [])
   .map((l) => l.inwardIssue.key)
   .join(", ");
 
-export async function fetchJiraRelease({ version, config, env = process.env, fetchImpl = fetch, now = Date.now() }) {
+/** One authenticated search against Jira Cloud. Both fetchers below use it. Follows pages up to `pages`. */
+async function searchJira({ env, jql, fields, pages = 1, hint, fetchImpl }) {
   const base = env.JIRA_BASE_URL.replace(/\/$/, "");
   const auth = Buffer.from(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}`).toString("base64");
-  const jira = config.jira || {};
-  const pointsField = jira.storyPointsField || "customfield_10016";
-  const map = { ...DEFAULT_PRIORITY_MAP, ...(jira.priorityMap || {}) };
-  const jql = buildJql(jira.releaseJql || 'fixVersion = "{{version}}" ORDER BY priority DESC, key ASC', { jiraVersion: version });
-  const areaFor = (f) => f.components?.[0]?.name || f.labels?.find((l) => l.startsWith("area-"))?.slice(5) || "Core";
-
   const issues = [];
   let nextPageToken;
-  for (let page = 0; page < 5; page++) {
+  for (let page = 0; page < pages; page++) {
     const res = await fetchImpl(`${base}/rest/api/3/search/jql`, {
       method: "POST",
       headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ jql, fields: ["summary", "priority", "assignee", "status", "issuetype", "components", "labels", "issuelinks", pointsField], maxResults: 100, ...(nextPageToken ? { nextPageToken } : {}) }),
+      body: JSON.stringify({ jql, fields, maxResults: 100, ...(nextPageToken ? { nextPageToken } : {}) }),
       signal: AbortSignal.timeout(20000),
     });
     if (res.status === 401 || res.status === 403) throw new Error(`Jira rejected the credentials (${res.status}).`);
-    if (!res.ok) throw new Error(`Jira returned ${res.status}. Check the fix version and releaseJql in readiness.config.json.`);
+    if (!res.ok) throw new Error(`Jira returned ${res.status}. ${hint}`);
     const body = await res.json();
     issues.push(...(body.issues || []));
     nextPageToken = body.nextPageToken;
     if (!nextPageToken || body.isLast) break;
   }
+  return { base, issues };
+}
+
+export async function fetchJiraRelease({ version, config, env = process.env, fetchImpl = fetch }) {
+  const jira = config.jira || {};
+  const pointsField = jira.storyPointsField || "customfield_10016";
+  const map = { ...DEFAULT_PRIORITY_MAP, ...(jira.priorityMap || {}) };
+  const types = { ...JIRA_TYPES, ...(jira.typeMap || {}) };
+  const jql = buildJql(jira.releaseJql || 'fixVersion = "{{version}}" ORDER BY priority DESC, key ASC', { jiraVersion: version });
+  const areaFor = (f) => f.components?.[0]?.name || f.labels?.find((l) => l.startsWith("area-"))?.slice(5) || "Core";
+  const { issues } = await searchJira({
+    env, jql, pages: 5, fetchImpl,
+    fields: ["summary", "priority", "assignee", "status", "issuetype", "components", "labels", "issuelinks", pointsField],
+    hint: "Check the fix version and releaseJql in readiness.config.json.",
+  });
 
   return issues.map((i) => {
     const f = i.fields;
@@ -63,10 +77,10 @@ export async function fetchJiraRelease({ version, config, env = process.env, fet
     return {
       key: i.key,
       summary: f.summary,
-      type: JIRA_TYPES[f.issuetype?.name] || "Task",
+      type: types[f.issuetype?.name] || "Task",
       priority: map[f.priority?.name] || "P2",
       points: Number(f[pointsField]) || 0,
-      status: mapStatus(f.status),
+      status: mapStatus(f.status, jira.statusMap),
       assignee: f.assignee?.displayName || "Unassigned",
       area: areaFor(f),
       team: "",
@@ -77,23 +91,12 @@ export async function fetchJiraRelease({ version, config, env = process.env, fet
 }
 
 export async function fetchJira({ release, config, env = process.env, fetchImpl = fetch, now = Date.now() }) {
-  const base = env.JIRA_BASE_URL.replace(/\/$/, "");
-  const auth = Buffer.from(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}`).toString("base64");
   const jira = config.jira || {};
   const jql = buildJql(jira.jql || 'fixVersion = "{{version}}" AND resolution = Unresolved AND priority in (Highest, High)', release);
   const map = { ...DEFAULT_PRIORITY_MAP, ...(jira.priorityMap || {}) };
+  const { base, issues } = await searchJira({ env, jql, fields: ["summary", "priority", "assignee", "created", "status"], fetchImpl, hint: "Check the JQL in readiness.config.json." });
 
-  const res = await fetchImpl(`${base}/rest/api/3/search/jql`, {
-    method: "POST",
-    headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ jql, fields: ["summary", "priority", "assignee", "created", "status"], maxResults: 100 }),
-    signal: AbortSignal.timeout(20000),
-  });
-  if (res.status === 401 || res.status === 403) throw new Error(`Jira rejected the credentials (${res.status}).`);
-  if (!res.ok) throw new Error(`Jira returned ${res.status}. Check the JQL in readiness.config.json.`);
-  const body = await res.json();
-
-  return (body.issues || []).map((i) => ({
+  return issues.map((i) => ({
     key: i.key,
     sev: map[i.fields.priority?.name] || "P2",
     title: i.fields.summary,
