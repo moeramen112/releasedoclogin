@@ -497,8 +497,8 @@ scripts/           build-standalone.mjs makes the single-file planner
 1. Read CI status from the CI provider directly, and map it to the release branch automatically.
 2. Learn the weights from history: which factors preceded a rollback or an incident.
 3. Let the agent read Jira descriptions and comments, and email chase notes with approval.
-5. Per-team criteria sets.
-6. Release calendar: drag a deploy bar to a new date, and show on-call and holiday calendars.
+4. Per-team criteria sets.
+5. Release calendar: drag a deploy bar to a new date, and show on-call and holiday calendars.
 
 ## Demo script (three minutes)
 
