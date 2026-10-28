@@ -11,7 +11,8 @@ import { buildSnapshot } from "./snapshot.js";
 import { createStore, createJsonStore, auditEntry } from "./state.js";
 import { createAuth, roleAllows } from "./auth.js";
 import { DEMO_SEED } from "./sources/fixture.js";
-import { jiraConfigured, fetchJiraRelease } from "./sources/jira.js";
+import { jiraConfigured } from "./sources/jira.js";
+import { createTrackers } from "./trackers.js";
 import { createJobs } from "./jobs.js";
 import { createAi } from "./ai.js";
 import { createAgentService, AgentError } from "./agent-service.js";
@@ -27,7 +28,7 @@ const RELEASE_RE = /^\/api\/releases\/([a-z0-9-]{3,64})$/;
 const PUBLIC_API = new Set(["GET /api/health", "GET /api/auth/status", "POST /api/auth/login", "POST /api/auth/accept"]);
 const PUBLIC_FILES = new Set(["/login.html", "/invite.html", "/login.js", "/styles.css"]);
 // Who may call what. Anything not listed needs only a signed-in user (viewer).
-const NEEDS = { "POST /api/waive": "editor", "POST /api/unwaive": "editor", "POST /api/manual": "editor", "POST /api/notify": "editor", "POST /api/agent/check": "editor", "POST /api/agent/auto": "editor", "POST /api/agent/item": "editor", "POST /api/ai/briefing": "editor", "POST /api/ai/risks": "editor", "POST /api/ai/dependencies": "editor", "POST /api/ai/schedule": "editor", "POST /api/ai/raid": "editor", "GET /api/jira/issues": "editor", "GET /api/admin/users": "admin", "POST /api/admin/users": "admin", "POST /api/admin/users/reinvite": "admin", "POST /api/admin/users/update": "admin" };
+const NEEDS = { "POST /api/waive": "editor", "POST /api/unwaive": "editor", "POST /api/manual": "editor", "POST /api/notify": "editor", "POST /api/agent/check": "editor", "POST /api/agent/auto": "editor", "POST /api/agent/item": "editor", "POST /api/ai/briefing": "editor", "POST /api/ai/risks": "editor", "POST /api/ai/dependencies": "editor", "POST /api/ai/schedule": "editor", "POST /api/ai/raid": "editor", "GET /api/jira/issues": "editor", "GET /api/tickets": "editor", "GET /api/admin/users": "admin", "POST /api/admin/users": "admin", "POST /api/admin/users/reinvite": "admin", "POST /api/admin/users/update": "admin" };
 const SECURITY_HEADERS = { "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY" };
 const LOCAL_USER = { email: "local", name: "Local user", role: "admin" };
 const MAX_RELEASES = 500;
@@ -45,6 +46,7 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
   const auth = authOn === false ? null : await createAuth({ dir: stateDir, env });
   const relDb = await createJsonStore(path.join(stateDir, "releases.json"), () => ({ releases: {}, audit: [] }));
   const jobsDb = await createJsonStore(path.join(stateDir, "jobs.json"), () => ({ releases: {} }));
+  const trackers = createTrackers(deps.trackers || []);
   const ai = deps.ai || createAi({ env, fetchImpl: deps.fetchAnthropic || fetch });
   const agentDb = await createJsonStore(path.join(stateDir, "agent.json"), () => ({ runs: {}, auto: {}, inbox: [] }));
   const aiUse = new Map(); // person -> times used in the last hour, so a loop cannot run up a bill
@@ -56,7 +58,7 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
     recent.push(now); aiUse.set(k, recent);
   };
   const agent = createAgentService({ relDb, agentDb, ai, env, deps, log: (m) => console.error(m) });
-  const jobs = createJobs({ relDb, jobsDb, config, env, deps, agent, log: (m) => console.error(m) });
+  const jobs = createJobs({ relDb, jobsDb, config, env, deps, agent, trackers, log: (m) => console.error(m) });
   const stores = {};
   // Waivers, manual checks and the audit log belong to one release, so each repo and release branch gets its own file.
   const storeKey = ({ mode, release }) => (mode === "demo" ? "demo" : `live.${release.repo}@${release.headRef}`.toLowerCase().replace(/\//g, "__").replace(/[^a-z0-9@._-]+/g, "-"));
@@ -106,7 +108,7 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
       result,
       history: state.history.filter((h) => h.key === key).slice(-60),
       audit: state.audit.slice(-25).reverse(),
-      integrations: { github: Boolean(env.GITHUB_TOKEN), jira: jiraConfigured(env), slack: Boolean(env.SLACK_WEBHOOK_URL), ai: ai.mode },
+      integrations: { github: Boolean(env.GITHUB_TOKEN), jira: jiraConfigured(env), slack: Boolean(env.SLACK_WEBHOOK_URL), ai: ai.mode, trackers: trackers.list(env) },
     };
   }
 
@@ -145,6 +147,22 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
   const originOf = (req) => (env.PUBLIC_URL ? env.PUBLIC_URL.replace(/\/+$/, "") : `${isSecure(req) ? "https" : "http"}://${req.headers.host}`);
   const inviteUrl = (req, { email, token }) => `${originOf(req)}/invite.html?email=${encodeURIComponent(email)}&token=${token}`;
 
+  async function ticketsFrom(trackerId, versionRaw) {
+    const tracker = trackers.get(trackerId);
+    if (!tracker) throw new HttpError(400, "That ticket tracker is not set up.");
+    if (!tracker.configured(env)) throw new HttpError(400, `${tracker.label} is not configured. Set ${tracker.needs} on the server.`);
+    const version = text(versionRaw, 80);
+    if (!version) throw new HttpError(400, `Enter the ${tracker.label} ${tracker.versionLabel} first.`);
+    // Tests and old callers can still replace the Jira fetcher with deps.fetchJiraRelease.
+    const fetchTickets = tracker.id === "jira" && deps.fetchJiraRelease ? deps.fetchJiraRelease : tracker.fetchTickets;
+    try {
+      const issues = await fetchTickets({ version, config, env });
+      return { tracker: tracker.id, version, issues };
+    } catch (e) {
+      throw new HttpError(502, e.message);
+    }
+  }
+
   const routes = {
     "GET /api/config": async (req, url, user) => ({
       authEnabled: Boolean(auth),
@@ -152,23 +170,14 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
       release: config.release,
       defaultMode,
       criteria: config.criteria.map(({ id, name, type, source, required, params }) => ({ id, name, type, source: source || "github", required: required !== false, checkId: type === "manual" ? params.checkId : undefined })),
-      integrations: { github: Boolean(env.GITHUB_TOKEN), jira: jiraConfigured(env), slack: Boolean(env.SLACK_WEBHOOK_URL), ai: ai.mode },
+      integrations: { github: Boolean(env.GITHUB_TOKEN), jira: jiraConfigured(env), slack: Boolean(env.SLACK_WEBHOOK_URL), ai: ai.mode, trackers: trackers.list(env) },
     }),
 
     "GET /api/readiness": async (req, url) => payload(target(url.searchParams), url.searchParams.get("refresh") === "1"),
 
-    // Tickets and story points for the planner. Needs JIRA_BASE_URL, JIRA_EMAIL and JIRA_API_TOKEN on the server.
-    "GET /api/jira/issues": async (req, url) => {
-      if (!jiraConfigured(env)) throw new HttpError(400, "Jira is not configured. Set JIRA_BASE_URL, JIRA_EMAIL and JIRA_API_TOKEN on the server.");
-      const version = text(url.searchParams.get("version"), 80);
-      if (!version) throw new HttpError(400, "Enter the Jira fix version first.");
-      try {
-        const issues = await (deps.fetchJiraRelease || fetchJiraRelease)({ version, config, env });
-        return { version, issues };
-      } catch (e) {
-        throw new HttpError(502, e.message);
-      }
-    },
+    // Tickets and story points for the planner, from any tracker (Jira is the built-in one). Settings live on the server.
+    "GET /api/tickets": async (req, url) => ticketsFrom(url.searchParams.get("tracker"), url.searchParams.get("version")),
+    "GET /api/jira/issues": async (req, url) => ticketsFrom("jira", url.searchParams.get("version")), // the original address, kept so nothing that calls it breaks
 
     "POST /api/waive": async (req, url, user) => {
       guard(req);
@@ -358,7 +367,7 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
   };
 
   // The browser runs the same pure modules as the server, so the planner and the dashboard cannot disagree.
-  const SHARED = { "/engine.js": "engine.js", "/risk.js": "risk.js", "/plan.js": "plan.js", "/deps.js": "deps.js", "/history.js": "history.js", "/html.js": "html.js", "/schedule.js": "schedule.js", "/schedule-view.js": "schedule-view.js", "/raid.js": "raid.js", "/raid-view.js": "raid-view.js" };
+  const SHARED = { "/engine.js": "engine.js", "/risk.js": "risk.js", "/plan.js": "plan.js", "/deps.js": "deps.js", "/history.js": "history.js", "/html.js": "html.js", "/schedule.js": "schedule.js", "/schedule-view.js": "schedule-view.js", "/raid.js": "raid.js", "/raid-view.js": "raid-view.js", "/import.js": "import.js" };
 
   async function serveStatic(pathname, res) {
     const rel = pathname === "/" ? "/index.html" : pathname;

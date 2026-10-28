@@ -73,7 +73,7 @@ test("release ids that are also object property names do not leak or crash", asy
 test("roles: a viewer can read but never change anything, an editor cannot touch accounts", async () => {
   const w = await call("PUT", "/api/releases/role-test", { plan: plan("Mine"), baseVersion: 0 }, editor);
   assert.equal(w.status, 200);
-  for (const [m, p, b] of [["PUT", "/api/releases/role-test", { plan: plan("Hack"), baseVersion: 1 }], ["DELETE", "/api/releases/role-test"], ["POST", "/api/waive", {}], ["POST", "/api/agent/check", { releaseId: "role-test" }], ["POST", "/api/ai/raid", {}], ["GET", "/api/admin/users"], ["POST", "/api/admin/users", { email: "x@y.com", role: "admin" }]]) {
+  for (const [m, p, b] of [["PUT", "/api/releases/role-test", { plan: plan("Hack"), baseVersion: 1 }], ["DELETE", "/api/releases/role-test"], ["POST", "/api/waive", {}], ["POST", "/api/agent/check", { releaseId: "role-test" }], ["POST", "/api/ai/raid", {}], ["GET", "/api/tickets?tracker=jira&version=1"], ["GET", "/api/jira/issues?version=1"], ["GET", "/api/admin/users"], ["POST", "/api/admin/users", { email: "x@y.com", role: "admin" }]]) {
     const r = await call(m, p, b, viewer); assert.equal(r.status, 403, `viewer ${m} ${p}`);
   }
   for (const [p, b] of [["/api/admin/users", { email: "x@y.com", role: "admin" }], ["/api/admin/users/update", { email: "vi@example.com", role: "admin" }]]) {

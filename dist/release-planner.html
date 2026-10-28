@@ -359,6 +359,15 @@ details.quick > summary { cursor: pointer; font-size: 12px; color: var(--muted);
 .raid-filters label, .raid-filters select { max-width: 100%; }
 @media (max-width: 560px) { .raid-filters { flex-direction: column; align-items: stretch; } .raid-filters label { display: flex; justify-content: space-between; gap: 8px; } .raid-filters select { max-width: 60%; } .cal { max-width: 100%; } }
 
+/* ---------- ticket import ---------- */
+.import-box { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); }
+.import-box textarea { width: 100%; font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace; box-sizing: border-box; }
+.ti-maps { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px 12px; margin: 10px 0; }
+.ti-map { display: grid; gap: 2px; font-size: 12px; }
+.ti-map span { color: var(--muted); }
+.ti-map select { max-width: 100%; }
+#tk-source select { margin-left: 4px; }
+
 </style>
 <div class="wrap">
     <header class="top">
@@ -2199,6 +2208,198 @@ function filterRaid(rows, { type = "", owner = "", releaseId = "", rating = "" }
 
 return { RAID_TYPES, RAID_STATUS, RAID_RATINGS, emptyRaid, cleanRaid, isClosedRaid, isOverdue, summarizeRaid, SOURCES, suggestRaid, acceptSuggestion, validateRaidSuggestions, buildRaidView, filterRaid };
 })();
+const __mod_import = (() => {
+// Ticket import from a spreadsheet: paste cells, or load a CSV or TSV export from any tracker
+// (Jira, Linear, Asana, Azure DevOps, Trello, a plain spreadsheet).
+//
+// Pure functions. No clock, no network, no disk. The same file runs in the browser (the import panel)
+// and in tests. Three steps, each usable on its own:
+//   parseTable(text)            -> { headers, rows }          text to cells
+//   suggestMapping(headers)     -> { key: 0, summary: 1, ... } which column holds which ticket field
+//   mapTickets(rows, mapping)   -> { tickets, skipped, notes } cells to the planner's ticket shape
+//
+// How to change the rules
+//  - IMPORT_FIELDS lists the ticket fields and the header names that mean each one. Add a synonym to teach it a new export.
+//  - The value maps (PRIORITY, STATUS, TYPE) say how a word in a spreadsheet becomes a planner value.
+//    Each entry is [pattern, result]; the first pattern that matches wins.
+
+const IMPORT_LIMITS = { rows: 5000, columns: 60, cell: 2000, chars: 2_000_000 };
+
+/* ---------- 1. text to cells ---------- */
+
+const DELIMITERS = ["\t", ",", ";", "|"];
+
+/** The delimiter that appears most in the first line (outside quotes). Tab wins ties: pasting from a sheet gives tabs. */
+function detectDelimiter(text) {
+  const counts = Object.fromEntries(DELIMITERS.map((d) => [d, 0]));
+  let quoted = false;
+  for (let i = 0; i < text.length && i < 5000; i++) {
+    const c = text[i];
+    if (c === '"') quoted = !quoted;
+    else if (!quoted && (c === "\n" || c === "\r")) break;
+    else if (!quoted && c in counts) counts[c]++;
+  }
+  return DELIMITERS.reduce((best, d) => (counts[d] > counts[best] ? d : best), "\t");
+}
+
+/**
+ * Split text into rows of cells. Handles quoted cells, "" for a quote inside one, line breaks inside quotes,
+ * a leading BOM, Windows and Mac line endings, and ragged rows. Never throws; stops at the limits.
+ */
+function parseTable(input, { delimiter } = {}) {
+  let text = String(input ?? "").slice(0, IMPORT_LIMITS.chars).replace(/^\uFEFF/, "");
+  const delim = delimiter || detectDelimiter(text);
+  const out = [];
+  let row = [], cell = "", quoted = false, truncated = text.length >= IMPORT_LIMITS.chars;
+  const endCell = () => { row.push(cell.slice(0, IMPORT_LIMITS.cell)); cell = ""; };
+  const endRow = () => { endCell(); if (row.some((x) => x.trim() !== "")) out.push(row.slice(0, IMPORT_LIMITS.columns)); row = []; };
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else quoted = false; }
+      else cell += c;
+    } else if (c === '"' && cell === "") quoted = true;
+    else if (c === delim) endCell();
+    else if (c === "\n" || c === "\r") { if (c === "\r" && text[i + 1] === "\n") i++; endRow(); }
+    else cell += c;
+    if (out.length > IMPORT_LIMITS.rows) { truncated = true; break; }
+  }
+  if (cell !== "" || row.length) endRow();
+  const headers = (out.shift() || []).map((h) => h.trim());
+  if (out.length > IMPORT_LIMITS.rows) { out.length = IMPORT_LIMITS.rows; truncated = true; }
+  return { delimiter: delim, headers, rows: out, truncated };
+}
+
+/* ---------- 2. which column is which ---------- */
+
+/** The ticket fields, in the order columns are claimed. `names` are header texts (lowercase, letters and digits only). */
+const IMPORT_FIELDS = [
+  { id: "key", label: "Ticket key", names: ["key", "issuekey", "ticketkey", "id", "ticketid", "issueid", "workitemid", "taskid", "identifier", "ref", "reference", "number", "ticket", "issue"] },
+  { id: "summary", label: "Summary", names: ["summary", "title", "name", "taskname", "workitemtitle", "subject", "issuetitle", "description"] },
+  { id: "type", label: "Type", names: ["type", "issuetype", "workitemtype", "tickettype", "kind"] },
+  { id: "priority", label: "Priority", names: ["priority", "prio", "severity", "urgency"] },
+  { id: "points", label: "Story points", names: ["storypoints", "storypointestimate", "points", "estimate", "size", "effort", "pts", "sp"] },
+  { id: "status", label: "Status", names: ["status", "state", "workflowstate", "column", "stage"] },
+  { id: "assignee", label: "Assignee", names: ["assignee", "assignedto", "assigned", "owner", "responsible", "person"] },
+  { id: "area", label: "Area", names: ["area", "component", "components", "module", "areapath"] },
+  { id: "team", label: "Team", names: ["team", "squad", "group", "department"] },
+  { id: "blockedBy", label: "Blocked by", names: ["blockedby", "isblockedby", "dependson", "dependencies", "predecessors", "blockers", "blocker"] },
+];
+
+const squash = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/** Guess the mapping from the header row. Each column is used for at most one field. Returns { fieldId: columnIndex or -1 }. */
+function suggestMapping(headers) {
+  const heads = (headers || []).map(squash);
+  const taken = new Set();
+  const map = {};
+  const claim = (f, test) => {
+    for (const name of f.names) {            // earlier names are stronger matches
+      const i = heads.findIndex((h, n) => !taken.has(n) && h && test(h, name));
+      if (i >= 0) { taken.add(i); map[f.id] = i; return; }
+    }
+  };
+  for (const f of IMPORT_FIELDS) claim(f, (h, name) => h === name);
+  // Second look for headers with extra words around a known name: "Card Name", "Custom field (Story point estimate)".
+  for (const f of IMPORT_FIELDS) if (map[f.id] === undefined) claim(f, (h, name) => (name.length >= 4 && h.endsWith(name)) || (name.length >= 8 && h.includes(name)));
+  for (const f of IMPORT_FIELDS) if (map[f.id] === undefined) map[f.id] = -1;
+  return map;
+}
+
+/* ---------- 3. cells to tickets ---------- */
+
+const PRIORITY = [
+  [/^(p0|0|1|highest|blocker|critical|urgent|sev0|sev1|s1|showstopper)$/, "P0"],
+  [/^(p1|2|high|major|sev2|s2|important)$/, "P1"],
+  [/^(p2|3|medium|med|normal|moderate|sev3|s3|default)$/, "P2"],
+  [/^(p3|4|5|low|lowest|minor|trivial|sev4|s4|none|nice ?to ?have)$/, "P3"],
+];
+const STATUS = [
+  [/(not started|unstarted|backlog|to ?do|open|new|planned|ready for dev|icebox|triage)/, "To do"],
+  [/(cancel|won'?t|reject|duplicate|obsolete|declined)/, "Done"], // closed without shipping: it no longer holds the release back
+  [/(done|closed|resolved|complete|shipped|released|merged|finished|deployed|verified)/, "Done"],
+  [/(review|qa|test|verify|validation|approval|uat)/, "In review"],
+  [/(progress|doing|started|active|wip|develop|working|implement|building)/, "In progress"],
+  [/.*/, "To do"],
+];
+const TYPE = [
+  [/(bug|defect|incident|problem|regression|fix)/, "Bug"],
+  [/(story|feature|epic|enhancement|improvement|user ?story|requirement)/, "Story"],
+  [/.*/, "Task"],
+];
+const AREAS = ["Payments", "Auth", "Data", "Core", "Mobile", "UI", "Infra", "Security"];
+
+/** The first table entry whose pattern matches; `known` is false when only the catch-all (or nothing) matched. */
+const pick = (table, value, fallback) => {
+  const v = String(value ?? "").trim().toLowerCase();
+  if (!v) return { value: fallback, known: false };
+  for (const [re, out] of table) if (re.test(v)) return { value: out, known: re.source !== ".*" };
+  return { value: fallback, known: false };
+};
+const clip = (s, n) => String(s ?? "").replace(/\s+/g, " ").trim().slice(0, n);
+
+/** "5", "5.5", "5 pts", "5,5" (a comma as the decimal point) -> a number from 0 to 1000. Anything else is 0. */
+function parsePoints(v) {
+  const m = String(v ?? "").trim().replace(/,(?=\d{1,2}\b)/, ".").match(/^-?\d+(\.\d+)?/);
+  const n = m ? Number(m[0]) : 0;
+  return Number.isFinite(n) ? Math.min(1000, Math.max(0, Math.round(n * 100) / 100)) : 0;
+}
+
+/** Ticket keys from "A-1, B-2; C-3 D-4". */
+const keysFrom = (v) => [...new Set(String(v ?? "").split(/[\s,;|]+/).map((x) => x.trim()).filter(Boolean))].map((x) => x.slice(0, 40)).join(", ");
+
+/**
+ * Turn rows into planner tickets.
+ *  rows     arrays of cells (from parseTable)
+ *  mapping  { fieldId: columnIndex or -1 }; a field with no column gets a plain default
+ * Returns { tickets, skipped: [{ row, reason }], notes }. `row` counts from 2 (row 1 is the header), like a spreadsheet.
+ * `notes` are one-line warnings, such as "3 priorities were not recognised and became P2".
+ */
+function mapTickets(rows, mapping = {}) {
+  const cellOf = (r, id) => (Number.isInteger(mapping[id]) && mapping[id] >= 0 ? r[mapping[id]] ?? "" : "");
+  const tickets = [], skipped = [], seen = new Set();
+  let badPriority = 0, generated = 0;
+  (rows || []).forEach((r, n) => {
+    const rowNo = n + 2;
+    const summary = clip(cellOf(r, "summary"), 200);
+    let key = clip(cellOf(r, "key"), 40);
+    if (!key && !summary) { skipped.push({ row: rowNo, reason: "no key and no summary" }); return; }
+    if (!key) { key = `IMP-${++generated}`; }
+    const id = key.toUpperCase();
+    if (seen.has(id)) { skipped.push({ row: rowNo, reason: `${key} appears twice; the first one was kept` }); return; }
+    seen.add(id);
+    const pr = pick(PRIORITY, cellOf(r, "priority"), "P2");
+    if (String(cellOf(r, "priority")).trim() && !pr.known) badPriority++;
+    const area = clip(cellOf(r, "area"), 40);
+    tickets.push({
+      key, summary: summary || key,
+      type: pick(TYPE, cellOf(r, "type"), "Task").value,
+      priority: pr.value,
+      points: parsePoints(cellOf(r, "points")),
+      status: pick(STATUS, cellOf(r, "status"), "To do").value,
+      assignee: clip(cellOf(r, "assignee"), 60) || "Unassigned",
+      area: AREAS.find((a) => a.toLowerCase() === area.toLowerCase()) || area || "Core",
+      team: clip(cellOf(r, "team"), 40),
+      blockedBy: keysFrom(cellOf(r, "blockedBy")),
+      tags: { migration: false, customerFacing: false, untested: false },
+    });
+  });
+  const notes = [];
+  if (badPriority) notes.push(`${badPriority} priorit${badPriority === 1 ? "y was" : "ies were"} not recognised and became P2.`);
+  if (generated) notes.push(`${generated} row${generated === 1 ? " had" : "s had"} no key, so ${generated === 1 ? "it was" : "they were"} numbered IMP-1${generated > 1 ? ` to IMP-${generated}` : ""}.`);
+  if (!mapping || !(mapping.key >= 0)) notes.push("No column is set as the ticket key. Pick one if your sheet has it, so a second import updates tickets instead of adding copies.");
+  return { tickets, skipped, notes };
+}
+
+/** All three steps at once, for callers that do not need to show the mapping. */
+function importTickets(text, mapping) {
+  const t = parseTable(text);
+  const m = mapping || suggestMapping(t.headers);
+  return { ...mapTickets(t.rows, m), headers: t.headers, mapping: m, truncated: t.truncated };
+}
+
+return { IMPORT_LIMITS, parseTable, IMPORT_FIELDS, suggestMapping, parsePoints, mapTickets, importTickets };
+})();
 const __mod_uikit = (() => {
 // Small helpers shared by the planner page and its panels.
 const $ = (s, r = document) => r.querySelector(s);
@@ -2527,6 +2728,7 @@ const { renderVerdict, renderRisk, renderPoints, renderDeps, renderCriteria, ren
 const { RAID_TYPES, RAID_STATUS, RAID_RATINGS, emptyRaid, summarizeRaid, isOverdue, isClosedRaid, suggestRaid, acceptSuggestion } = __mod_raid;
 const { applyOutcomeChange, historyRows, historySummary } = __mod_history;
 const { createAssist } = __mod_assist;
+const { parseTable, suggestMapping, mapTickets, IMPORT_FIELDS, IMPORT_LIMITS } = __mod_import;
 const { buildSchedule, conflictsFor } = __mod_schedule;
 const { renderClashBanner } = __mod_schedule_view;
 const OLD_KEY = "rr.plan.v1"; // the single plan the first version of the planner saved
@@ -2872,7 +3074,7 @@ function renderInputs() {
       { p: "scope.bigAt", l: "Large ticket at", t: "number", suffix: "points or more" },
     ].map(fieldHtml).join("")}</div>
      <div class="tablewrap"><table class="tbl tk" style="min-width:1340px"><thead><tr><th>Key</th><th>Summary</th><th title="The team doing the work">Team</th><th title="Tickets that must be Done first. Separate keys with commas.">Blocked by</th><th>Type</th><th>Pri</th><th>Pts</th><th>Status</th><th>Assignee</th><th>Area</th><th title="Includes a database migration">Mig</th><th title="Customers will see this">Cust</th><th title="Lacks automated tests">No tests</th><th></th></tr></thead><tbody id="tickets-body"></tbody></table></div>
-     <div class="row-actions"><button class="btn small" type="button" data-act="add-ticket">Add ticket</button><button class="btn small" type="button" data-act="pull-jira" id="b-jira">Pull from Jira</button><button class="btn small" type="button" data-act="refresh-jira" id="b-jira-refresh" title="Update statuses and points of the tickets below, and add new ones. Keeps tickets you typed by hand.">Refresh from Jira</button><span id="tk-clear"></span><span class="msg" id="tk-sum"></span><span class="msg" id="jira-msg"></span><span class="msg" id="sync-state"></span></div>`);
+     <div class="row-actions"><button class="btn small" type="button" data-act="add-ticket">Add ticket</button><button class="btn small" type="button" data-act="pull-jira" id="b-jira">Pull from Jira</button><button class="btn small" type="button" data-act="refresh-jira" id="b-jira-refresh" title="Update statuses and points of the tickets below, and add new ones. Keeps tickets you typed by hand.">Refresh from Jira</button><button class="btn small" type="button" data-act="ti-open" id="b-import" title="Paste rows from a spreadsheet, or load a CSV file exported from any ticket tool">Import from spreadsheet</button><span id="tk-source"></span><span id="tk-clear"></span><span class="msg" id="tk-sum"></span><span class="msg" id="jira-msg"></span><span class="msg" id="sync-state"></span></div><div id="tk-import"></div>`);
 
   html += section("handoffs", "Handoffs between teams", "Work one team must hand to another before it can start. Each handoff blocks the tickets you name until it is Done.",
     `<div class="tablewrap"><table class="tbl" style="min-width:1000px"><thead><tr><th>Handed over</th><th>From</th><th>To</th><th>Owner</th><th>Due</th><th>Status</th><th title="Ticket keys, separated by commas">Blocks</th><th></th></tr></thead><tbody id="handoffs-body"></tbody></table></div>
@@ -2908,6 +3110,7 @@ function renderInputs() {
   renderRunbook();
   renderClear(true);
   updateJiraButton();
+  renderTicketImport();
 }
 
 const TEAM_OPTS = [{ v: "", l: "—" }, ...TEAMS.map((x) => ({ v: x, l: x }))];
@@ -3196,6 +3399,7 @@ function onEdit(e) {
     setPath(P, el.dataset.p, el.value);
   }
   if (/^(people|extraPeople)\./.test(el.dataset.p)) renderPeopleList();
+  if (el.dataset.p === "release.tracker") updateJiraButton();
   const rt = /^raid\.(\d+)\.type$/.exec(el.dataset.p);
   if (rt) { const r = P.raid[Number(rt[1])]; r.status = RAID_STATUS[r.type][0]; renderRaidTable(); }
   else if (/^raid\.\d+\.(status|due)$/.test(el.dataset.p)) renderRaidTable();
@@ -3215,14 +3419,24 @@ function say(id, text, kind = "") {
   if (el) { el.textContent = text; el.className = "msg " + kind; }
 }
 
+// Which ticket trackers this server knows about. A browser-only copy knows just Jira, which stays disabled there.
+const trackerList = () => (integrations.trackers?.length ? integrations.trackers : [{ id: "jira", label: "Jira", versionLabel: "fix version", needs: "JIRA_BASE_URL, JIRA_EMAIL and JIRA_API_TOKEN", configured: integrations.jira }]);
+const curTracker = () => trackerList().find((t) => t.id === (P?.release?.tracker || "jira")) || trackerList()[0];
+
 function updateJiraButton() {
-  const why = integrations.jira ? "" : integrations.server ? "Set JIRA_BASE_URL, JIRA_EMAIL and JIRA_API_TOKEN on the server" : "Available when running the server (npm start)";
-  for (const id of ["#b-jira", "#b-jira-refresh"]) {
+  const t = curTracker();
+  const why = t.configured ? "" : integrations.server ? `Set ${t.needs} on the server` : "Available when running the server (npm start)";
+  for (const [id, verb] of [["#b-jira", "Pull from"], ["#b-jira-refresh", "Refresh from"]]) {
     const b = $(id);
     if (!b) continue;
-    b.disabled = !integrations.jira;
+    b.textContent = `${verb} ${t.label}`;
+    b.disabled = !t.configured;
     if (why) b.title = why;
   }
+  // Only when the server has more than one tracker is there anything to choose.
+  const pick = $("#tk-source");
+  if (pick) pick.innerHTML = trackerList().length > 1
+    ? `<label class="msg">Ticket source <select data-p="release.tracker" aria-label="Ticket source">${trackerList().map((x) => `<option value="${esc(x.id)}"${x.id === t.id ? " selected" : ""}>${esc(x.label)}</option>`).join("")}</select></label>` : "";
 }
 
 let syncTimer;
@@ -3243,39 +3457,99 @@ async function showSync() {
   } catch { /* status is a nicety */ }
 }
 
-async function refreshJira() {
-  const version = P.release.fixVersion.trim();
-  if (!version) { say("jira-msg", "Enter the Jira fix version first.", "bad"); return; }
-  say("jira-msg", "Refreshing from Jira…");
+async function fetchTracker(say_) {
+  const t = curTracker(), version = P.release.fixVersion.trim();
+  if (!version) { say("jira-msg", `Enter the ${t.label} ${t.versionLabel} first.`, "bad"); return null; }
+  say("jira-msg", say_(t));
   try {
-    const res = await fetch("/api/jira/issues?version=" + encodeURIComponent(version));
+    const res = await fetch(`/api/tickets?tracker=${encodeURIComponent(t.id)}&version=${encodeURIComponent(version)}`);
     const body = await res.json();
     if (!res.ok) throw new Error(body.error || `Request failed (${res.status}).`);
-    const m = mergeTickets(P.tickets, body.issues);
-    P.tickets = m.tickets;
-    renderTickets(); changed();
-    say("jira-msg", `Refreshed ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}: ${m.updated} updated, ${m.added} new, ${m.kept} not in Jira kept as they were.`, "ok");
+    return { t, version, issues: body.issues };
   } catch (e) {
     say("jira-msg", e.message, "bad");
+    return null;
   }
 }
 
-async function pullJira() {
-  const version = P.release.fixVersion.trim();
-  if (!version) { say("jira-msg", "Enter the Jira fix version first.", "bad"); return; }
-  say("jira-msg", "Loading from Jira…");
-  try {
-    const res = await fetch("/api/jira/issues?version=" + encodeURIComponent(version));
-    const body = await res.json();
-    if (!res.ok) throw new Error(body.error || `Request failed (${res.status}).`);
-    P.tickets = body.issues;
-    renderTickets(); changed();
-    const pts = body.issues.reduce((n, i) => n + i.points, 0);
-    say("jira-msg", `Loaded ${body.issues.length} tickets and ${pts} points from fix version ${version}. This replaced the tickets above.`, "ok");
-  } catch (e) {
-    say("jira-msg", e.message, "bad");
-  }
+async function refreshJira() {
+  const got = await fetchTracker((t) => `Refreshing from ${t.label}…`);
+  if (!got) return;
+  const m = mergeTickets(P.tickets, got.issues);
+  P.tickets = m.tickets;
+  renderTickets(); changed();
+  say("jira-msg", `Refreshed ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}: ${m.updated} updated, ${m.added} new, ${m.kept} not in ${got.t.label} kept as they were.`, "ok");
 }
+
+async function pullJira() {
+  const got = await fetchTracker((t) => `Loading from ${t.label}…`);
+  if (!got) return;
+  P.tickets = got.issues;
+  renderTickets(); changed();
+  const pts = got.issues.reduce((n, i) => n + i.points, 0);
+  say("jira-msg", `Loaded ${got.issues.length} tickets and ${pts} points from ${got.t.versionLabel} ${got.version}. This replaced the tickets above.`, "ok");
+}
+
+/* ---------- import tickets from a spreadsheet (any tracker that can export) ---------- */
+
+const TI = { open: false, text: "", sig: "", mapping: {} };
+let tiTimer = 0;
+
+function tiState() {
+  const t = parseTable(TI.text);
+  const sig = t.headers.join("\u0001");
+  if (TI.sig !== sig) { TI.sig = sig; TI.mapping = suggestMapping(t.headers); } // new headers: guess again; the same headers keep the person's choices
+  return { t, r: mapTickets(t.rows, TI.mapping) };
+}
+
+function renderTicketImport() {
+  const host = $("#tk-import");
+  if (!host) return;
+  if (TI.forId !== lib.current) { TI.forId = lib.current; TI.open = false; } // an open import belongs to the release it was opened on
+  if (!TI.open) { host.innerHTML = ""; return; }
+  host.innerHTML = `<div class="import-box">
+    <div class="lab-row">Import tickets from a spreadsheet</div>
+    <p class="msg">Copy the rows from your sheet (with the header row) and paste them here, or load a CSV file. Works with exports from Jira, Linear, Asana, Azure DevOps, Trello or any spreadsheet. Tickets with a key you already have are updated; the rest are added. Nothing is deleted.</p>
+    <textarea id="ti-text" rows="6" spellcheck="false" aria-label="Pasted spreadsheet rows" placeholder="Key&#9;Summary&#9;Status&#9;Story points&#10;REL-1&#9;Fix the login&#9;In progress&#9;3"></textarea>
+    <div class="row-actions"><label class="btn small" for="ti-file">Load a CSV file</label><input type="file" id="ti-file" accept=".csv,.tsv,.txt,text/csv,text/plain" hidden><span class="msg" id="ti-file-msg"></span></div>
+    <div id="ti-preview"></div></div>`;
+  $("#ti-text").value = TI.text;
+  renderTiPreview();
+}
+
+function renderTiPreview() {
+  const box = $("#ti-preview");
+  if (!box) return;
+  if (!TI.text.trim()) { box.innerHTML = `<div class="row-actions"><button class="btn small" type="button" data-act="ti-cancel">Cancel</button></div>`; return; }
+  const { t, r } = tiState();
+  if (!t.headers.length || !t.rows.length) { box.innerHTML = `<div class="msg bad">I need a header row and at least one row of tickets.</div><div class="row-actions"><button class="btn small" type="button" data-act="ti-cancel">Cancel</button></div>`; return; }
+  const col = (id) => `<label class="ti-map"><span>${esc(IMPORT_FIELDS.find((f) => f.id === id).label)}</span><select data-ti="${id}" aria-label="Column for ${esc(id)}"><option value="-1">(not in my sheet)</option>${t.headers.map((h, i) => `<option value="${i}"${TI.mapping[id] === i ? " selected" : ""}>${esc(h || `Column ${i + 1}`)}</option>`).join("")}</select></label>`;
+  const rows = r.tickets.slice(0, 5).map((x) => `<tr><td>${esc(x.key)}</td><td>${esc(x.summary)}</td><td>${esc(x.type)}</td><td>${esc(x.priority)}</td><td>${esc(x.points)}</td><td>${esc(x.status)}</td><td>${esc(x.assignee)}</td></tr>`).join("");
+  const skipped = r.skipped.length ? `${r.skipped.length} row${r.skipped.length === 1 ? "" : "s"} skipped (${esc(r.skipped.slice(0, 3).map((x) => `row ${x.row}: ${x.reason}`).join("; "))}${r.skipped.length > 3 ? "; …" : ""}).` : "";
+  box.innerHTML = `<div class="ti-maps">${IMPORT_FIELDS.map((f) => col(f.id)).join("")}</div>
+    <div class="tablewrap"><table class="tbl"><thead><tr><th>Key</th><th>Summary</th><th>Type</th><th>Pri</th><th>Pts</th><th>Status</th><th>Assignee</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="msg">${r.tickets.length} ticket${r.tickets.length === 1 ? "" : "s"} ready${r.tickets.length > 5 ? " (first 5 shown)" : ""}. ${skipped} ${esc(r.notes.join(" "))}${t.truncated ? ` Only the first ${IMPORT_LIMITS.rows} rows were read.` : ""}</div>
+    <div class="row-actions"><button class="btn small primary" type="button" data-act="ti-go"${r.tickets.length ? "" : " disabled"}>Import ${r.tickets.length} ticket${r.tickets.length === 1 ? "" : "s"}</button><button class="btn small" type="button" data-act="ti-cancel">Cancel</button></div>`;
+}
+
+document.addEventListener("input", (e) => {
+  if (e.target.id !== "ti-text") return;
+  TI.text = e.target.value;
+  clearTimeout(tiTimer); tiTimer = setTimeout(renderTiPreview, 200);
+});
+document.addEventListener("change", async (e) => {
+  if (e.target.dataset?.ti) { TI.mapping = { ...TI.mapping, [e.target.dataset.ti]: Number(e.target.value) }; renderTiPreview(); return; }
+  if (e.target.id !== "ti-file") return;
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  const msg = $("#ti-file-msg");
+  if (file.size > IMPORT_LIMITS.chars) { if (msg) { msg.textContent = "That file is too big to read here (over 2 MB)."; msg.className = "msg bad"; } return; }
+  TI.text = await file.text();
+  if ($("#ti-text")) $("#ti-text").value = TI.text;
+  if (msg) { msg.textContent = file.name; msg.className = "msg"; }
+  renderTiPreview();
+});
 
 document.addEventListener("change", async (e) => {
   if (e.target.id === "ai-audience") AI.audience = e.target.value;
@@ -3361,6 +3635,18 @@ document.addEventListener("click", async (e) => {
       changed();
       say(what === "tickets" ? "jira-msg" : "rb-msg", "Restored.", "ok");
     }
+  }
+  else if (act === "ti-open") { TI.open = !TI.open; renderTicketImport(); $("#ti-text")?.focus(); }
+  else if (act === "ti-cancel") { TI.open = false; renderTicketImport(); }
+  else if (act === "ti-go") {
+    const { r } = tiState();
+    if (!r.tickets.length) return;
+    lastCleared.tickets = P.tickets;
+    const m = mergeTickets(P.tickets, r.tickets);
+    P.tickets = m.tickets;
+    TI.open = false; TI.text = ""; TI.sig = "";
+    renderTicketImport(); renderTickets(); changed();
+    sayUndo("jira-msg", `Imported ${r.tickets.length} ticket${r.tickets.length === 1 ? "" : "s"}: ${m.added} new, ${m.updated} updated, ${m.kept} already here and left alone.`, "tickets");
   }
   else if (act === "pull-jira") pullJira();
   else if (act === "refresh-jira") refreshJira();
@@ -3530,7 +3816,7 @@ $("#import-file").addEventListener("change", async (e) => {
   }
   try {
     const res = await fetch("/api/config");
-    if (res.ok) { const cfg = await res.json(); integrations = { jira: Boolean(cfg.integrations?.jira), server: true, ai: cfg.integrations?.ai || "" }; updateJiraButton(); renderResults(); }
+    if (res.ok) { const cfg = await res.json(); integrations = { jira: Boolean(cfg.integrations?.jira), server: true, ai: cfg.integrations?.ai || "", trackers: Array.isArray(cfg.integrations?.trackers) ? cfg.integrations.trackers : undefined }; updateJiraButton(); renderResults(); }
   } catch { /* no server, planner still works on its own */ }
 })();
 
