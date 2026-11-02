@@ -394,10 +394,13 @@ details.quick > summary { cursor: pointer; font-size: 12px; color: var(--muted);
         <button class="btn small" type="button" data-act="rel-delete">Delete</button>
         <button class="btn small" type="button" data-act="rel-example">Load example</button>
         <button class="btn small" type="button" data-act="import">Import</button>
+        <button class="btn small" type="button" data-act="share" id="share-btn" title="Make a read-only link to this release that works without signing in">Share</button>
       </div>
       <span class="msg" id="rel-msg" role="status"></span>
       <span class="msg save-state" id="save-state" aria-live="polite"></span>
     </section>
+
+    <section class="panel" id="share-panel" aria-label="Share this release" hidden></section>
 
     <div class="sumbar" id="sumbar" aria-live="polite"></div>
 
@@ -3326,6 +3329,7 @@ function renderRelSelect() {
 
 function showRelease() {
   openWaive = null; waiveError = "";
+  SH.url = ""; SH.msg = ""; if (SH.open) loadShares();
   if (remote) store.set("rr.current", lib.current);
   saveLib();
   renderInputs();
@@ -3362,6 +3366,55 @@ function deleteRelease() {
   P = lib.items[lib.current];
   showRelease();
   sayRel(`Deleted “${name}”.`, true);
+}
+
+
+/* ---------- read-only share links (team edition only; needs the server) ---------- */
+const SH = { open: false, links: [], url: "", msg: "", kind: "", days: 7 };
+const shTime = (ms) => new Date(ms).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
+
+function drawShare() {
+  const el = $("#share-panel");
+  if (!el) return;
+  el.hidden = !SH.open;
+  if (!SH.open) return;
+  const rows = SH.links.map((l) => `<tr><td>${esc(shTime(l.createdAt))}<div class="msg">by ${esc(l.createdBy)}</div></td><td>${l.state === "active" ? `Expires ${esc(shTime(l.expiresAt))}` : `<span class="msg">${l.state === "revoked" ? "Turned off" : "Expired"}</span>`}</td><td>${l.state === "active" ? `<button class="btn small" type="button" data-act="share-revoke" data-id="${esc(l.id)}">Turn off</button>` : ""}</td></tr>`).join("");
+  el.innerHTML = `<div class="panel-head"><h2>Share this release</h2><span class="note">A read-only page with the call, risk and runbook progress. No sign-in needed, so only send it to people you trust.</span></div>
+    <div class="row-actions"><label class="note">Expires after <select id="share-days">${[1, 3, 7, 14, 30, 90].map((d) => `<option value="${d}"${d === SH.days ? " selected" : ""}>${d} day${d === 1 ? "" : "s"}</option>`).join("")}</select></label>
+    <button class="btn small primary" type="button" data-act="share-create">Create link</button><button class="btn small" type="button" data-act="share-close">Close</button><span class="msg ${esc(SH.kind)}" role="status">${esc(SH.msg)}</span></div>
+    ${SH.url ? `<div class="row-actions"><input id="share-url" class="mono" readonly value="${esc(SH.url)}" size="56" aria-label="Share link"><button class="btn small" type="button" data-act="share-copy">Copy link</button></div><div class="msg">Shown once. Copy it now; after you close this it can only be turned off, not shown again.</div>` : ""}
+    ${rows ? `<div class="tablewrap"><table class="tbl"><thead><tr><th>Created</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="msg">No links for this release yet.</div>`}`;
+}
+
+async function shareCall(path, body) {
+  const res = await fetch(path, body ? { method: "POST", headers: RH, body: JSON.stringify(body) } : { headers: RH });
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(d.error || `Request failed (${res.status}).`);
+  return d;
+}
+async function loadShares() {
+  try { SH.links = (await shareCall("/api/share/list?releaseId=" + encodeURIComponent(lib.current))).links; } catch (e) { SH.msg = e.message; SH.kind = "bad"; }
+  drawShare();
+}
+async function shareAct(act, btn) {
+  if (act === "share") { SH.open = !SH.open; SH.url = ""; SH.msg = ""; SH.kind = ""; drawShare(); if (SH.open) await loadShares(); return; }
+  if (act === "share-close") { SH.open = false; SH.url = ""; drawShare(); return; }
+  if (act === "share-copy") {
+    try { await navigator.clipboard.writeText(SH.url); SH.msg = "Copied."; SH.kind = "ok"; } catch { $("#share-url")?.select(); SH.msg = "Copy was blocked. The link is selected: press Ctrl+C."; SH.kind = "bad"; }
+    drawShare(); return;
+  }
+  try {
+    if (act === "share-create") {
+      SH.days = Number($("#share-days")?.value) || 7;
+      if (remote) { pushRemote(lib.current); await remote.chain; }
+      const d = await shareCall("/api/share/create", { releaseId: lib.current, days: SH.days });
+      SH.url = d.url; SH.msg = `Link made. It expires in ${d.days} day${d.days === 1 ? "" : "s"}.`; SH.kind = "ok";
+    } else if (act === "share-revoke") {
+      await shareCall("/api/share/revoke", { id: btn.dataset.id });
+      SH.msg = "Link turned off."; SH.kind = "ok";
+    }
+  } catch (e) { SH.msg = e.message; SH.kind = "bad"; }
+  await loadShares();
 }
 
 function sayRel(text, undo = false, kind = "") {
@@ -3792,6 +3845,7 @@ document.addEventListener("click", async (e) => {
     } catch (err) { sayRel("Could not load it: " + err.message, false, "bad"); }
   }
   else if (act === "rel-delete") deleteRelease();
+  else if (act.startsWith("share")) shareAct(act, a);
   else if (act === "rel-undo") {
     if (lastDeleted) {
       const { plan, idx } = lastDeleted; lastDeleted = null;
@@ -3867,6 +3921,7 @@ $("#import-file").addEventListener("change", async (e) => {
   renderInputs();
   renderResults();
   saveLib();
+  if (STANDALONE || !remote || readOnly()) { $("#share-btn")?.remove(); $("#share-panel")?.remove(); } // needs the server, and an editor
   if (READONLY) {
     document.body.classList.add("ro");
     for (const el of [$("#inputs"), $(".relbar .toolbar")]) if (el) el.inert = true;
