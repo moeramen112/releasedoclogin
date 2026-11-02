@@ -123,6 +123,27 @@ When a release is done, open the last section on the left, **After the release**
 
 ![Release history: outcome counts, how the call held up, and each closed release](docs/history.png)
 
+## Read-only share links
+
+Send a status page to someone who has no account, such as a VP or a partner team.
+
+1. In the planner, open the release and click **Share**. Pick how long the link should last (1 to 90 days, 7 by default) and click **Create link**.
+2. Copy the link. It is shown once; the server keeps only a hash of it.
+3. Whoever opens it sees one read-only page: the call (GO, HOLD or NO-GO) and why, the risk score, points done, open criteria and runbook progress. No sign-in.
+4. Click **Turn off** next to a link to stop it at once. Expired and turned-off links show "This link is no longer active".
+
+![Share panel in the planner](docs/share-link.png)
+
+![What the person with the link sees](docs/share-page.png)
+
+What it protects:
+- One release only. Ticket text, people's names, notes, RAID owners, Slack settings and other releases are never on the page (`publicView()` in `src/share.js` is the only list of what is shown, and a test checks the rest stays out).
+- The page has no scripts and no buttons, and the server sends it with a strict content security policy and `noindex`.
+- Wrong guesses are rate-limited per address (20 a minute).
+- Only editors and admins can create or turn off links. Viewers do not see the button.
+
+The link works for people who can reach your server. On your own computer that means the same network; see **Putting it online** for wider sharing. The public edition (GitHub Pages) has no server, so it has no share links.
+
 ## Release calendar
 
 Open **Calendar** in the top menu. Every open release sits on one timeline: a bar for the deploy window, a thin line for the freeze, a dot for the go/no-go meeting, and a red line for now. Pick 2, 4 or 8 weeks. Closed releases are hidden unless you tick the box.
@@ -457,6 +478,7 @@ src/engine.js      criteria evaluators, waivers, verdict (pure)
 src/risk.js        story points, forecast, risk score (pure)
 src/deps.js        what waits on what: blockers, handoffs, cycles, chains (pure)
 src/plan.js        the plan, templates, runbook generator and handoff steps, brief (pure)
+src/share.js       read-only share links: token, expiry, the public view and page (pure)
 src/history.js     release history: the call when closed, rows, summary and trends (pure)
 src/schedule.js    release calendar: clash checks, rules, free slots (pure)
 src/raid.js        RAID log: items, rule-based suggestions, cross-release view (pure)

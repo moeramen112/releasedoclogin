@@ -34,10 +34,13 @@
         <button class="btn small" type="button" data-act="rel-delete">Delete</button>
         <button class="btn small" type="button" data-act="rel-example">Load example</button>
         <button class="btn small" type="button" data-act="import">Import</button>
+        <button class="btn small" type="button" data-act="share" id="share-btn" title="Make a read-only link to this release that works without signing in">Share</button>
       </div>
       <span class="msg" id="rel-msg" role="status"></span>
       <span class="msg save-state" id="save-state" aria-live="polite"></span>
     </section>
+
+    <section class="panel" id="share-panel" aria-label="Share this release" hidden></section>
 
     <div class="sumbar" id="sumbar" aria-live="polite"></div>
 

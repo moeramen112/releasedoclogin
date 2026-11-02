@@ -2,6 +2,7 @@
 // Tokens stay on the server. The browser never sees them.
 
 import http from "node:http";
+import crypto from "node:crypto";
 import { completePlan } from "./plan.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -17,6 +18,7 @@ import { createJobs } from "./jobs.js";
 import { createAi } from "./ai.js";
 import { createAgentService, AgentError } from "./agent-service.js";
 import { buildSlackMessage, sendSlack } from "./notify.js";
+import { newToken, hashToken, clampDays, linkState, publicView, renderSharePage, TOKEN_RE, MAX_LINKS_PER_RELEASE } from "./share.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC = path.join(ROOT, "public");
@@ -28,7 +30,8 @@ const RELEASE_RE = /^\/api\/releases\/([a-z0-9-]{3,64})$/;
 const PUBLIC_API = new Set(["GET /api/health", "GET /api/auth/status", "POST /api/auth/login", "POST /api/auth/accept"]);
 const PUBLIC_FILES = new Set(["/login.html", "/invite.html", "/login.js", "/styles.css"]);
 // Who may call what. Anything not listed needs only a signed-in user (viewer).
-const NEEDS = { "POST /api/waive": "editor", "POST /api/unwaive": "editor", "POST /api/manual": "editor", "POST /api/notify": "editor", "POST /api/agent/check": "editor", "POST /api/agent/auto": "editor", "POST /api/agent/item": "editor", "POST /api/ai/briefing": "editor", "POST /api/ai/risks": "editor", "POST /api/ai/dependencies": "editor", "POST /api/ai/schedule": "editor", "POST /api/ai/raid": "editor", "GET /api/jira/issues": "editor", "GET /api/tickets": "editor", "GET /api/admin/users": "admin", "POST /api/admin/users": "admin", "POST /api/admin/users/reinvite": "admin", "POST /api/admin/users/update": "admin" };
+const NEEDS = { "POST /api/waive": "editor", "POST /api/unwaive": "editor", "POST /api/manual": "editor", "POST /api/notify": "editor", "POST /api/agent/check": "editor", "POST /api/agent/auto": "editor", "POST /api/agent/item": "editor", "POST /api/ai/briefing": "editor", "POST /api/ai/risks": "editor", "POST /api/ai/dependencies": "editor", "POST /api/ai/schedule": "editor", "POST /api/ai/raid": "editor", "GET /api/jira/issues": "editor", "GET /api/tickets": "editor", "GET /api/admin/users": "admin", "POST /api/admin/users": "admin", "POST /api/admin/users/reinvite": "admin", "POST /api/admin/users/update": "admin", "POST /api/share/create": "editor", "GET /api/share/list": "editor", "POST /api/share/revoke": "editor" };
+const SHARE_RE = /^\/share\/([A-Za-z0-9_-]{1,100})$/;
 const SECURITY_HEADERS = { "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY" };
 const LOCAL_USER = { email: "local", name: "Local user", role: "admin" };
 const MAX_RELEASES = 500;
@@ -46,6 +49,7 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
   const auth = authOn === false ? null : await createAuth({ dir: stateDir, env });
   const relDb = await createJsonStore(path.join(stateDir, "releases.json"), () => ({ releases: {}, audit: [] }));
   const jobsDb = await createJsonStore(path.join(stateDir, "jobs.json"), () => ({ releases: {} }));
+  const shareDb = await createJsonStore(path.join(stateDir, "shares.json"), () => ({ links: {} })); // keyed by token hash; the token itself is never saved
   const trackers = createTrackers(deps.trackers || []);
   const ai = deps.ai || createAi({ env, fetchImpl: deps.fetchAnthropic || fetch });
   const agentDb = await createJsonStore(path.join(stateDir, "agent.json"), () => ({ runs: {}, auto: {}, inbox: [] }));
@@ -178,6 +182,38 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
     // Tickets and story points for the planner, from any tracker (Jira is the built-in one). Settings live on the server.
     "GET /api/tickets": async (req, url) => ticketsFrom(url.searchParams.get("tracker"), url.searchParams.get("version")),
     "GET /api/jira/issues": async (req, url) => ticketsFrom("jira", url.searchParams.get("version")), // the original address, kept so nothing that calls it breaks
+
+    // Read-only share links. Editors make and turn off links; anyone holding a live link sees that one release, read-only.
+    "POST /api/share/create": async (req, url, user) => {
+      guard(req);
+      const body = await readBody(req);
+      const releaseId = text(body.releaseId, 64), rel = own(relDb.get().releases, releaseId);
+      if (!rel) throw new HttpError(404, "No such release.");
+      const token = newToken(), now = Date.now(), days = clampDays(body.days);
+      const link = { id: crypto.randomBytes(5).toString("hex"), releaseId, createdBy: user.name || user.email, createdAt: now, expiresAt: now + days * 86_400_000, revoked: false };
+      await shareDb.mutate((s) => {
+        const live = Object.values(s.links).filter((l) => l.releaseId === releaseId && linkState(l, now) === "active");
+        if (live.length >= MAX_LINKS_PER_RELEASE) throw new HttpError(400, `This release already has ${MAX_LINKS_PER_RELEASE} active links. Turn some off first.`);
+        for (const [h, l] of Object.entries(s.links)) if (linkState(l, now) !== "active" && now - l.expiresAt > 30 * 86_400_000) delete s.links[h]; // tidy old ones
+        s.links[hashToken(token)] = link;
+      });
+      return { id: link.id, url: `${originOf(req)}/share/${token}`, expiresAt: link.expiresAt, days };
+    },
+    "GET /api/share/list": async (req, url) => {
+      const releaseId = text(url.searchParams.get("releaseId"), 64), now = Date.now();
+      return { links: Object.values(shareDb.get().links).filter((l) => l.releaseId === releaseId).map((l) => ({ id: l.id, createdBy: l.createdBy, createdAt: l.createdAt, expiresAt: l.expiresAt, state: linkState(l, now) })).sort((a, b) => b.createdAt - a.createdAt) };
+    },
+    "POST /api/share/revoke": async (req, url, user) => {
+      guard(req);
+      const body = await readBody(req);
+      const id = text(body.id, 20);
+      return shareDb.mutate((s) => {
+        const hit = Object.values(s.links).find((l) => l.id === id);
+        if (!hit) throw new HttpError(404, "No such link.");
+        hit.revoked = true;
+        return { ok: true };
+      });
+    },
 
     "POST /api/waive": async (req, url, user) => {
       guard(req);
@@ -369,6 +405,25 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
   // The browser runs the same pure modules as the server, so the planner and the dashboard cannot disagree.
   const SHARED = { "/engine.js": "engine.js", "/risk.js": "risk.js", "/plan.js": "plan.js", "/deps.js": "deps.js", "/history.js": "history.js", "/html.js": "html.js", "/schedule.js": "schedule.js", "/schedule-view.js": "schedule-view.js", "/raid.js": "raid.js", "/raid-view.js": "raid-view.js", "/import.js": "import.js" };
 
+
+  // The one page that needs no sign-in. The code in the address is the only key; wrong guesses are rate-limited per address.
+  const shareMisses = new Map();
+  function serveShare(req, res, token) {
+    const ip = ipOf(req), now = Date.now();
+    const misses = (shareMisses.get(ip) || []).filter((t) => now - t < 60_000);
+    const headers = { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'", ...SECURITY_HEADERS };
+    if (misses.length >= 20) { res.writeHead(429, { ...headers, "Retry-After": "60" }); return res.end(renderSharePage(null)); }
+    const link = TOKEN_RE.test(token) ? own(shareDb.get().links, hashToken(token)) : undefined;
+    const rel = link && linkState(link, now) === "active" ? own(relDb.get().releases, link.releaseId) : undefined;
+    if (!rel) {
+      misses.push(now); shareMisses.set(ip, misses);
+      if (shareMisses.size > 5000) shareMisses.clear();
+      res.writeHead(404, headers); return res.end(renderSharePage(null));
+    }
+    res.writeHead(200, headers);
+    return res.end(renderSharePage(publicView(rel.plan, now)));
+  }
+
   async function serveStatic(pathname, res) {
     const rel = pathname === "/" ? "/index.html" : pathname;
     const file = SHARED[rel] ? path.join(ROOT, "src", SHARED[rel]) : path.join(PUBLIC, path.normalize(rel));
@@ -436,6 +491,8 @@ export async function createApp({ configPath = path.join(ROOT, "readiness.config
       res.end(JSON.stringify(body));
     };
     try {
+      const share = req.method === "GET" ? SHARE_RE.exec(url.pathname) : null;
+      if (share) return serveShare(req, res, share[1]);
       const user = auth ? auth.userFor(req) : LOCAL_USER;
       const key = `${req.method} ${url.pathname}`;
       if (url.pathname.startsWith("/api/")) {
